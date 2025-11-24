@@ -1,5 +1,5 @@
 # Change baseurl before deploy
-baseurl = "https://tirpitz.github.io"
+baseurl = "https://kxkxk.github.io"
 languageCode = "zh-cn"
 title = "Tirpitz's blog"
 
