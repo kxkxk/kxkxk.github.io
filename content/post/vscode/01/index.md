@@ -46,10 +46,9 @@ export VSCODE_SERVER_PATCHELF_PATH=$HOME/.vscode-server/sysroot/usr/bin/patchelf
 4. 配置ssh config
 在`~/.ssh/config`中添加以下内容
 ```
-  Host 10.86.8.54
-    HostName 10.86.8.54
-    User yuxuan.yang
-    ProxyCommand ssh -W %h:%p test-jump
+  Host xxxxx
+    HostName xxxxx
+    User xxxxx
     # 增加这一条
     RemoteCommand source ~/.vscode-server/sysroot.sh && exec $SHELL -l
 ```
