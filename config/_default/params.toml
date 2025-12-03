@@ -81,8 +81,11 @@ enabled = true
 enabled = true
 provider = "disqus"
 
+[comments.disqus]
+shortname = "kxkxk"
+
 [comments.disqusjs]
-shortname = ""
+shortname = "kxkxk"
 apiUrl = ""
 apiKey = ""
 admin = ""
