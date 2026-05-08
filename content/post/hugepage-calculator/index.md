@@ -96,7 +96,7 @@ function hpCalc() {
   if (!row) { document.getElementById('hp-out').innerHTML = '<p class="hp-warn">未找到对应的基准数据</p>'; return; }
   if (memGB <= 0 || count <= 0) { document.getElementById('hp-out').innerHTML = '<p class="hp-warn">请输入有效的内存和磁盘数量</p>'; return; }
 
-  const hpGB      = row.hp * count;
+  const hpGB      = row.hp * count + 10;
   const totalGB   = row.total * count;
   const remainGB  = memGB - totalGB;
   const totalHP   = hpGB * 1024 / 2;
