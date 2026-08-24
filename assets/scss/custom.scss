@@ -1,3 +1,393 @@
-/*
-    You can add your own custom styles here.
-*/
+/* ============================================================
+   kxkxk's blog 定制主题 · 构成主义
+   纸白 / 墨黑 / 朱红 三色，硬边投影、几何块面、锐角
+   克制的装饰：只用方块、直线、斜切
+   ============================================================ */
+
+:root {
+    --sys-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Droid Sans",
+        "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+    --mono-font-family: "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace;
+
+    /* 纸 / 墨 / 朱 */
+    --ink: #1b1712;
+    --paper: #f2eee6;
+    --red: #c73e28;
+
+    --body-background: var(--paper);
+    --body-text-color: #423c33;
+    --accent-color: var(--red);
+    --accent-color-darker: #a32e1c;
+    --accent-color-text: #faf6ec;
+
+    --card-background: #faf7f0;
+    --card-background-selected: #f0e9db;
+    --card-text-color-main: var(--ink);
+    --card-text-color-secondary: #6f6759;
+    --card-text-color-tertiary: #a89e8c;
+    --card-separator-color: rgba(27, 23, 18, 0.16);
+    --card-border-radius: 4px;
+
+    --section-separation: 48px;
+    --main-top-padding: 52px;
+    --article-font-size: 1.72rem;
+    --article-line-height: 1.9;
+
+    /* 柔和投影为主，硬偏移投影只留给装饰元素 */
+    --shadow-l1: 0 1px 3px rgba(27, 23, 18, 0.07);
+    --shadow-l2: 0 4px 12px rgba(27, 23, 18, 0.08);
+    --shadow-l3: 0 8px 24px rgba(27, 23, 18, 0.1);
+    --shadow-l4: 0 12px 32px rgba(27, 23, 18, 0.12);
+
+    --blockquote-background-color: #ece5d5;
+    --pre-background-color: #f6f1e4;
+    --pre-text-color: #2b2620;
+    --code-background-color: rgba(199, 62, 40, 0.1);
+    --code-text-color: #a32e1c;
+    --link-background-color: 199, 62, 40;
+    --link-background-opacity: 0.15;
+    --link-background-opacity-hover: 0.3;
+}
+
+:root[data-scheme="dark"] {
+    --ink: #ece4d3;
+    --paper: #14110e;
+    --red: #e0512f;
+
+    --body-background: var(--paper);
+    --body-text-color: #b0a693;
+    --accent-color: var(--red);
+    --accent-color-darker: #ec6a48;
+    --accent-color-text: #14110e;
+
+    --card-background: #1d1915;
+    --card-background-selected: #2b2419;
+    --card-text-color-main: #ece4d3;
+    --card-text-color-secondary: #a29881;
+    --card-text-color-tertiary: #6b6353;
+    --card-separator-color: rgba(236, 228, 211, 0.14);
+
+    --shadow-l1: 0 1px 3px rgba(0, 0, 0, 0.3);
+    --shadow-l2: 0 4px 12px rgba(0, 0, 0, 0.35);
+    --shadow-l3: 0 8px 24px rgba(0, 0, 0, 0.4);
+    --shadow-l4: 0 12px 32px rgba(0, 0, 0, 0.45);
+
+    --blockquote-background-color: #241f19;
+    --pre-background-color: #100e0c;
+    --pre-text-color: #ece4d3;
+    --code-background-color: rgba(224, 81, 47, 0.14);
+    --code-text-color: #ec6a48;
+}
+
+/* ---------- 页面顶部：红黑分段的构成主义饰带 ---------- */
+body::before {
+    content: "";
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 5px;
+    background: linear-gradient(90deg, var(--red) 0 22%, var(--ink) 22% 100%);
+    z-index: 1000;
+}
+
+/* ---------- 字体层级：全部黑体加粗，标题宽字距 ---------- */
+.article-title,
+.section-title,
+.widget-title,
+.article-content h1,
+.article-content h2,
+.article-content h3,
+.site-name {
+    font-family: var(--sys-font-family);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+}
+
+.widget-title,
+.section-title {
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    font-size: 1.3rem;
+}
+
+/* ---------- 卡片：细描边 + 柔影，悬浮时朱红点睛 ---------- */
+.article-list .article,
+.article-list--compact article,
+section.widget,
+.article-page .main-article {
+    border: 1px solid var(--card-separator-color);
+    border-radius: 4px;
+}
+
+.article-list .article,
+section.widget {
+    transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.article-list .article:hover,
+section.widget:hover {
+    transform: translateY(-3px);
+    border-color: rgba(199, 62, 40, 0.4);
+    box-shadow: var(--shadow-l2), 5px 5px 0 rgba(199, 62, 40, 0.12);
+}
+
+/* ---------- 小部件标题：红色方块标记 ---------- */
+.widget-title,
+.section-title {
+    position: relative;
+    padding-left: 18px;
+}
+
+.widget-title::before,
+.section-title::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 9px;
+    height: 9px;
+    background: var(--red);
+}
+
+/* ---------- 头像：方形 + 朱红错位硬投影 ---------- */
+.site-avatar .site-logo {
+    border-radius: 3px !important;
+    border: 2px solid var(--ink);
+    box-shadow: 6px 6px 0 var(--red) !important;
+    box-sizing: border-box;
+    transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.site-avatar .site-logo:hover {
+    transform: translate(3px, 3px);
+    box-shadow: 3px 3px 0 var(--red) !important;
+}
+
+.site-name {
+    font-size: 2.1rem;
+    color: var(--card-text-color-main);
+}
+
+/* ---------- 侧栏菜单：当前页墨块反白，悬停红色左条 ---------- */
+#main-menu li a {
+    border-radius: 2px;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+#main-menu li.active a {
+    background: var(--ink);
+    color: var(--paper);
+}
+
+#main-menu li a:hover {
+    background: var(--red);
+    color: var(--accent-color-text);
+}
+
+/* ---------- 分类：朱红实心锐角标签 ---------- */
+.article-category a,
+.article-tags a,
+.tagCloud-tags a {
+    border-radius: 2px;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.article-category a {
+    background: var(--red) !important;
+    color: #faf6ec !important;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 600;
+}
+
+.article-category a:hover {
+    background: var(--ink) !important;
+    color: var(--paper) !important;
+}
+
+.article-tags a:hover,
+.tagCloud-tags a:hover {
+    background: var(--ink);
+    color: var(--paper) !important;
+}
+
+/* ---------- 选中文字：朱红反白 ---------- */
+::selection {
+    background: var(--red);
+    color: #faf6ec;
+}
+
+/* ---------- 正文链接：朱红下划线，悬停反白 ---------- */
+.article-content a {
+    color: var(--accent-color-darker);
+    text-decoration: none;
+    border-bottom: 2px solid var(--red);
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.article-content a:hover {
+    background: var(--red);
+    color: #faf6ec;
+}
+
+/* ---------- 引用块：朱红粗左条 ---------- */
+.article-content blockquote {
+    border-inline-start: 5px solid var(--red);
+}
+
+/* ---------- 代码块：纸底墨框 + 黑色标题栏 ---------- */
+.article-content .highlight {
+    margin-left: 0;
+    margin-right: 0;
+    width: 100%;
+    margin-top: 1.8em;
+    margin-bottom: 1.8em;
+    padding: 38px 0 0;
+    border: 1px solid var(--card-separator-color);
+    border-radius: 4px;
+    overflow: hidden;
+    box-shadow: var(--shadow-l1);
+}
+
+/* 标题栏：朱红底 + CODE 字样 */
+.article-content .highlight::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 38px;
+    background: var(--red);
+}
+
+.article-content .highlight::after {
+    content: "◼ CODE";
+    position: absolute;
+    top: 0;
+    left: 14px;
+    height: 38px;
+    line-height: 38px;
+    font-family: var(--mono-font-family);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.25em;
+    color: #faf6ec;
+}
+
+.article-content .highlight .lntable,
+.article-content .highlight .lntd {
+    display: block;
+    width: 100%;
+    padding: 0;
+}
+
+.article-content .highlight .lntable {
+    border-spacing: 0;
+    overflow-x: auto;
+}
+
+.article-content .highlight tbody,
+.article-content .highlight tr {
+    display: block;
+}
+
+.article-content .highlight tr {
+    display: flex;
+}
+
+/* 行号列：微亮底 + 细分隔线（代码区为墨底） */
+.article-content .highlight .lntd:first-child {
+    flex: 0 0 auto;
+    width: auto;
+    background: rgba(27, 23, 18, 0.05);
+    border-right: 1px solid rgba(27, 23, 18, 0.2);
+    user-select: none;
+}
+
+:root[data-scheme="dark"] .article-content .highlight .lntd:first-child {
+    background: rgba(255, 255, 255, 0.06);
+    border-right-color: rgba(236, 228, 211, 0.18);
+}
+
+/* 亮色模式：chroma 默认白底改为透明，透出纸色代码区 */
+[data-scheme="light"] .article-content .highlight .chroma {
+    background-color: transparent;
+}
+
+/* 表格配色跟随两色模式 */
+:root {
+    --table-border-color: rgba(27, 23, 18, 0.35);
+    --tr-even-background-color: #ece5d5;
+}
+
+:root[data-scheme="dark"] {
+    --table-border-color: rgba(236, 228, 211, 0.25);
+    --tr-even-background-color: #241f19;
+}
+
+.article-content .highlight .lntd:first-child pre {
+    padding: 16px 12px 16px 18px;
+    text-align: right;
+}
+
+.article-content .highlight .lntd:last-child {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-x: auto;
+}
+
+.article-content .highlight .lntd:last-child pre {
+    padding: 16px 18px;
+}
+
+.article-content .highlight pre {
+    font-family: var(--mono-font-family);
+    font-size: 0.88em;
+    line-height: 1.75;
+}
+
+/* 行号：朱红半透 */
+.article-content .highlight .lnt {
+    color: var(--red);
+    opacity: 0.55;
+}
+
+/* 复制按钮：简洁朱红描边 */
+.article-content .copyCodeButton {
+    top: 6px;
+    right: 8px;
+    border: 1px solid rgba(250, 246, 236, 0.6);
+    border-radius: 3px;
+    box-shadow: none;
+    background: transparent;
+    color: #faf6ec;
+    font-size: 12px;
+    padding: 4px 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+}
+
+.article-content .copyCodeButton:hover {
+    background: rgba(250, 246, 236, 0.15);
+}
+
+/* ---------- 滚动条：墨色窄条 ---------- */
+::-webkit-scrollbar {
+    width: 9px;
+    height: 9px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--ink);
+    border-radius: 0;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--red);
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
