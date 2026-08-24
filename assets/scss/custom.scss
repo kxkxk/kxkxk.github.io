@@ -170,6 +170,19 @@ section.widget:hover {
     color: var(--card-text-color-main);
 }
 
+/* 签名：斜体 + 宽字距 + 朱红小星星 */
+.site-description {
+    font-style: italic;
+    letter-spacing: 0.06em;
+}
+
+.site-description::after {
+    content: "✦";
+    font-style: normal;
+    color: var(--red);
+    margin-left: 8px;
+}
+
 /* ---------- 侧栏菜单：当前页墨块反白，悬停红色左条 ---------- */
 #main-menu li a {
     border-radius: 2px;
