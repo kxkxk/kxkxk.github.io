@@ -183,20 +183,51 @@ section.widget:hover {
     margin-left: 8px;
 }
 
-/* ---------- 侧栏菜单：当前页墨块反白，悬停红色左条 ---------- */
+/* ---------- 侧栏菜单：朱红指示条生长 + 文本滑移，当前页墨块反白 ---------- */
 #main-menu li a {
+    position: relative;
     border-radius: 2px;
-    transition: background 0.15s ease, color 0.15s ease;
+    padding: 6px 14px;
+    transition: color 0.2s ease, background-color 0.2s ease,
+        transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-#main-menu li.active a {
-    background: var(--ink);
-    color: var(--paper);
+/* 左缘指示条：默认高度为 0，悬停生长，当前页全高 */
+#main-menu li a::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 50%;
+    width: 4px;
+    height: 0;
+    background: var(--red);
+    transform: translateY(-50%);
+    transition: height 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 #main-menu li a:hover {
-    background: var(--red);
-    color: var(--accent-color-text);
+    color: var(--red);
+    transform: translateX(6px);
+}
+
+#main-menu li a:hover::before {
+    height: 62%;
+}
+
+/* 当前页：墨块反白，左缘一条全高朱红 */
+#main-menu li.current a {
+    background: var(--ink);
+    color: var(--paper);
+    font-weight: 600;
+}
+
+#main-menu li.current a::before {
+    height: 100%;
+}
+
+#main-menu li.current a:hover {
+    color: var(--paper);
+    transform: none;
 }
 
 /* ---------- 分类：朱红实心锐角标签 ---------- */
@@ -403,4 +434,187 @@ section.widget:hover {
 
 ::-webkit-scrollbar-track {
     background: transparent;
+}
+
+/* ============================================================
+   微交互层：克制的"高级感"特效
+   ============================================================ */
+
+/* ---------- 平滑滚动（锚点跳转不再瞬移） ---------- */
+html {
+    scroll-behavior: smooth;
+    scroll-padding-top: 24px;
+}
+
+/* ---------- 阅读进度条：叠加在顶部饰带上，与红黑带融为一体 ---------- */
+#scroll-progress {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 5px;
+    width: 0%;
+    background: var(--red);
+    z-index: 1001;
+    transition: width 0.08s linear;
+    pointer-events: none;
+}
+
+/* ---------- 滚动渐入：卡片上浮浮现 ---------- */
+.reveal {
+    opacity: 0;
+    transform: translateY(16px);
+    transition: opacity 0.55s ease, transform 0.55s cubic-bezier(0.22, 0.61, 0.36, 1);
+    transition-delay: var(--reveal-delay, 0s);
+}
+
+.reveal.reveal-visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+/* ---------- 卡片悬停：一道光泽斜扫而过 ---------- */
+.article-list .article {
+    position: relative;
+    overflow: hidden;
+}
+
+.article-list .article::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: -70%;
+    width: 45%;
+    height: 100%;
+    background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.5), transparent);
+    transform: skewX(-14deg);
+    transition: left 0.65s ease;
+    pointer-events: none;
+}
+
+.article-list .article:hover::after {
+    left: 130%;
+}
+
+:root[data-scheme="dark"] .article-list .article::after {
+    background: linear-gradient(100deg, transparent, rgba(255, 255, 255, 0.09), transparent);
+}
+
+/* ---------- 明暗切换：背景色平滑过渡 ---------- */
+body,
+.article-list .article,
+section.widget,
+.article-page .main-article,
+.left-sidebar {
+    transition-property: background-color, border-color;
+    transition-duration: 0.35s;
+    transition-timing-function: ease;
+}
+
+/* 恢复各元素原本的交互动画（与上面的过渡叠加） */
+.article-list .article,
+section.widget {
+    transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease,
+        background-color 0.35s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    html {
+        scroll-behavior: auto;
+    }
+    .reveal {
+        opacity: 1;
+        transform: none;
+        transition: none;
+    }
+    .article-list .article::after {
+        display: none;
+    }
+}
+
+/* ============================================================
+   现代感特效层：自定义光标 / 打字机 / 3D 头像
+   ============================================================ */
+
+/* ---------- 自定义光标：红点 + 描边跟随环 ---------- */
+#cursor-dot,
+#cursor-ring {
+    position: fixed;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+    z-index: 9999;
+    border-radius: 50%;
+    opacity: 0;
+}
+
+#cursor-dot {
+    width: 7px;
+    height: 7px;
+    background: var(--red);
+}
+
+#cursor-ring {
+    width: 34px;
+    height: 34px;
+    border: 2px solid var(--red);
+    opacity: 0;
+    transition: width 0.22s ease, height 0.22s ease, opacity 0.3s ease,
+        background-color 0.22s ease;
+}
+
+body.cursor-on #cursor-dot { opacity: 1; }
+body.cursor-on #cursor-ring { opacity: 0.55; }
+
+#cursor-ring.cursor-active {
+    width: 54px;
+    height: 54px;
+    background: rgba(199, 62, 40, 0.1);
+}
+
+body.cursor-on.cursor-active-ring #cursor-ring { opacity: 0.9; }
+
+@media (hover: none), (pointer: coarse) {
+    #cursor-dot, #cursor-ring { display: none; }
+}
+
+/* ---------- 签名打字机 ---------- */
+.site-description .typing-caret {
+    display: inline-block;
+    width: 2px;
+    height: 1em;
+    background: var(--red);
+    margin-left: 3px;
+    vertical-align: -0.12em;
+    animation: caret-blink 0.85s steps(1) infinite;
+}
+
+@keyframes caret-blink {
+    50% { opacity: 0; }
+}
+
+/* 打字完成前隐藏红色小星星 */
+.site-description:not(.typed)::after {
+    opacity: 0;
+}
+
+.site-description::after {
+    transition: opacity 0.4s ease;
+}
+
+/* ---------- 头像 3D 视差容器 ---------- */
+.site-avatar {
+    transform-style: preserve-3d;
+    perspective: 600px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .site-description .typing-caret { display: none; }
+    .site-description:not(.typed)::after { opacity: 1; }
+    #main-menu li a {
+        transition: none;
+        transform: none;
+    }
+    #main-menu li a::before {
+        transition: none;
+    }
 }

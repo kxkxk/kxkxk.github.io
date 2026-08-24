@@ -1,1 +1,149 @@
 <script defer src="https://cn.vercount.one/js"></script>
+<script>
+/* 特效层：阅读进度条 / 滚动渐入 / 自定义光标 / 打字机签名 / 3D 头像 */
+(function () {
+    var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    var finePointer = window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+    var isHome = /^\/(page\/\d+\/)?$/.test(location.pathname);
+
+    function onReady(fn) {
+        if (document.body) fn();
+        else document.addEventListener("DOMContentLoaded", fn);
+    }
+
+    onReady(function () {
+        /* ============ 1. 顶部阅读进度条 ============ */
+        var bar = document.createElement("div");
+        bar.id = "scroll-progress";
+        document.body.appendChild(bar);
+
+        var ticking = false;
+        function updateBar() {
+            var doc = document.documentElement;
+            var max = doc.scrollHeight - window.innerHeight;
+            var p = max > 0 ? (window.scrollY / max) * 100 : 0;
+            bar.style.width = p + "%";
+            ticking = false;
+        }
+        window.addEventListener("scroll", function () {
+            if (!ticking) {
+                window.requestAnimationFrame(updateBar);
+                ticking = true;
+            }
+        }, { passive: true });
+        updateBar();
+
+        /* ============ 2. 滚动渐入 ============ */
+        if (!reduced && "IntersectionObserver" in window) {
+            var targets = document.querySelectorAll(
+                ".article-list .article, section.widget, .article-list--compact article"
+            );
+            targets.forEach(function (el) { el.classList.add("reveal"); });
+
+            var initialIndex = 0;
+            targets.forEach(function (el) {
+                if (el.getBoundingClientRect().top < window.innerHeight) {
+                    el.style.setProperty("--reveal-delay", (initialIndex++ * 0.06) + "s");
+                }
+            });
+
+            var io = new IntersectionObserver(function (entries) {
+                entries.forEach(function (entry) {
+                    if (entry.isIntersecting) {
+                        entry.target.classList.add("reveal-visible");
+                        io.unobserve(entry.target);
+                    }
+                });
+            }, { threshold: 0.08 });
+            targets.forEach(function (el) { io.observe(el); });
+        }
+
+        /* ============ 3. 自定义光标（精确指针设备） ============ */
+        if (finePointer && !reduced) {
+            var dot = document.createElement("div");
+            dot.id = "cursor-dot";
+            var ring = document.createElement("div");
+            ring.id = "cursor-ring";
+            document.body.appendChild(dot);
+            document.body.appendChild(ring);
+
+            var tx = -100, ty = -100, rx = -100, ry = -100;
+            document.addEventListener("mousemove", function (e) {
+                tx = e.clientX; ty = e.clientY;
+                document.body.classList.add("cursor-on");
+            }, { passive: true });
+            document.documentElement.addEventListener("mouseleave", function () {
+                document.body.classList.remove("cursor-on");
+            });
+
+            (function follow() {
+                rx += (tx - rx) * 0.16;
+                ry += (ty - ry) * 0.16;
+                dot.style.transform = "translate3d(" + tx + "px," + ty + "px,0) translate(-50%,-50%)";
+                ring.style.transform = "translate3d(" + rx + "px," + ry + "px,0) translate(-50%,-50%)";
+                requestAnimationFrame(follow);
+            })();
+
+            var hoverSel = "a, button, .copyCodeButton, input, select, textarea, [role=button]";
+            document.addEventListener("mouseover", function (e) {
+                if (e.target.closest(hoverSel)) {
+                    ring.classList.add("cursor-active");
+                    document.body.classList.add("cursor-active-ring");
+                }
+            }, { passive: true });
+            document.addEventListener("mouseout", function (e) {
+                if (e.target.closest(hoverSel)) {
+                    ring.classList.remove("cursor-active");
+                    document.body.classList.remove("cursor-active-ring");
+                }
+            }, { passive: true });
+        }
+
+        /* ============ 4. 打字机签名 ============ */
+        var desc = document.querySelector(".site-description");
+        if (isHome && desc && !reduced) {
+            var text = desc.textContent.trim();
+            desc.textContent = "";
+            var caret = document.createElement("span");
+            caret.className = "typing-caret";
+            desc.appendChild(caret);
+
+            var i = 0;
+            setTimeout(function type() {
+                if (i < text.length) {
+                    caret.before(document.createTextNode(text[i++]));
+                    setTimeout(type, 55 + Math.random() * 60);
+                } else {
+                    setTimeout(function () {
+                        caret.remove();
+                        desc.classList.add("typed");
+                    }, 700);
+                }
+            }, 600);
+        } else if (desc) {
+            desc.classList.add("typed");
+        }
+
+        /* ============ 5. 头像 3D 视差 ============ */
+        var sidebar = document.querySelector(".left-sidebar");
+        var avatarBox = document.querySelector(".site-avatar");
+        var avatar = avatarBox ? avatarBox.querySelector(".site-logo") : null;
+        if (sidebar && avatarBox && avatar && finePointer && !reduced) {
+            sidebar.addEventListener("mousemove", function (e) {
+                /* 取未变换的容器矩形：若用被旋转的头像自身矩形，
+                   投影缩小会放大距离比值，形成反馈回路导致翻转 */
+                var r = avatarBox.getBoundingClientRect();
+                var dx = (e.clientX - (r.left + r.width / 2)) / r.width;
+                var dy = (e.clientY - (r.top + r.height / 2)) / r.height;
+                dx = Math.max(-1.2, Math.min(1.2, dx));
+                dy = Math.max(-1.2, Math.min(1.2, dy));
+                avatar.style.transform =
+                    "perspective(600px) rotateY(" + (dx * 10) + "deg) rotateX(" + (-dy * 10) + "deg)";
+            });
+            sidebar.addEventListener("mouseleave", function () {
+                avatar.style.transform = "";
+            });
+        }
+    });
+})();
+</script>
