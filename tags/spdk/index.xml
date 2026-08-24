@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>SPDK on kxkxk's blog</title><link>https://kxkxk.github.io/tags/spdk/</link><description>Recent content in SPDK on kxkxk's blog</description><generator>Hugo -- gohugo.io</generator><language>zh-cn</language><lastBuildDate>Thu, 08 May 2025 12:00:00 +0000</lastBuildDate><atom:link href="https://kxkxk.github.io/tags/spdk/index.xml" rel="self" type="application/rss+xml"/><item><title>SPDK 大页内存计算器</title><link>https://kxkxk.github.io/p/spdk-%E5%A4%A7%E9%A1%B5%E5%86%85%E5%AD%98%E8%AE%A1%E7%AE%97%E5%99%A8/</link><pubDate>Thu, 08 May 2025 12:00:00 +0000</pubDate><guid>https://kxkxk.github.io/p/spdk-%E5%A4%A7%E9%A1%B5%E5%86%85%E5%AD%98%E8%AE%A1%E7%AE%97%E5%99%A8/</guid><description>&lt;p&gt;部署 SPDK/NVMe 存储时，需要为每个磁盘分配大页内存（HugePages）。本文提供一个计算器，根据服务器内存、磁盘容量和数量，快速计算出需要配置的 2MB 大页数量。&lt;/p&gt;
+&lt;h2 id="参数说明"&gt;参数说明
+&lt;/h2&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;参数&lt;/th&gt;
+&lt;th&gt;说明&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;内存大小&lt;/td&gt;
+&lt;td&gt;服务器物理内存，单位 GB&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;磁盘容量&lt;/td&gt;
+&lt;td&gt;单块 NVMe 磁盘容量&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;磁盘数量&lt;/td&gt;
+&lt;td&gt;NVMe 磁盘总数&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;pc_size&lt;/td&gt;
+&lt;td&gt;SPDK page cache 大小&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h2 id="计算器"&gt;计算器
+&lt;/h2&gt;&lt;div id="hp-calc"&gt;
+&lt;style&gt;
+#hp-calc { max-width: 640px; margin: 1.5em 0; }
+#hp-calc fieldset { border: 1px solid var(--card-border); border-radius: var(--card-border-radius); padding: 1.2em 1.5em; margin-bottom: 1em; background: var(--card-background); }
+#hp-calc legend { font-weight: 600; padding: 0 .4em; }
+.hp-row { display: flex; align-items: center; margin-bottom: .7em; gap: .6em; }
+.hp-row:last-child { margin-bottom: 0; }
+.hp-row label { min-width: 100px; font-size: .92em; }
+.hp-row input, .hp-row select { flex: 1; padding: .4em .6em; border: 1px solid var(--card-border); border-radius: 4px; background: var(--card-background); color: var(--body-text-color); font-size: .92em; }
+.hp-btn { display: inline-block; padding: .55em 1.6em; border: none; border-radius: 4px; background: var(--accent-color); color: #fff; font-size: .95em; cursor: pointer; margin-top: .5em; }
+.hp-btn:hover { opacity: .85; }
+.hp-results { margin-top: 1em; }
+.hp-result-item { display: flex; justify-content: space-between; padding: .5em 0; border-bottom: 1px dashed var(--card-border); font-size: .92em; }
+.hp-result-item:last-child { border-bottom: none; }
+.hp-result-item .val { font-weight: 700; font-family: monospace; }
+.hp-warn { color: #e55; font-weight: 600; margin-top: .6em; font-size: .9em; }
+.hp-ok { color: #2a9d8f; font-weight: 600; margin-top: .6em; font-size: .9em; }
+&lt;/style&gt;
+&lt;fieldset&gt;
+&lt;legend&gt;输入参数&lt;/legend&gt;
+&lt;div class="hp-row"&gt;
+&lt;label&gt;内存大小 (GB)&lt;/label&gt;
+&lt;input type="number" id="hp-mem" value="256" min="1"&gt;
+&lt;/div&gt;
+&lt;div class="hp-row"&gt;
+&lt;label&gt;磁盘容量&lt;/label&gt;
+&lt;select id="hp-disk"&gt;
+&lt;option value="7.68"&gt;7.68 TB&lt;/option&gt;
+&lt;option value="15.36"&gt;15.36 TB&lt;/option&gt;
+&lt;/select&gt;
+&lt;/div&gt;
+&lt;div class="hp-row"&gt;
+&lt;label&gt;磁盘数量&lt;/label&gt;
+&lt;input type="number" id="hp-count" value="1" min="1"&gt;
+&lt;/div&gt;
+&lt;div class="hp-row"&gt;
+&lt;label&gt;pc_size&lt;/label&gt;
+&lt;select id="hp-pcsz"&gt;
+&lt;option value="64"&gt;64 KB&lt;/option&gt;
+&lt;option value="128"&gt;128 KB&lt;/option&gt;
+&lt;option value="256"&gt;256 KB&lt;/option&gt;
+&lt;/select&gt;
+&lt;/div&gt;
+&lt;/fieldset&gt;
+&lt;p&gt;&lt;button class="hp-btn" onclick="hpCalc()"&gt;计算&lt;/button&gt;&lt;/p&gt;
+&lt;div class="hp-results" id="hp-out"&gt;&lt;/div&gt;
+&lt;/div&gt;
+&lt;script&gt;
+const HP_TABLE = {
+'64_7.68': { hp: 13, total: 18 },
+'64_15.36': { hp: 17, total: 26 },
+'128_7.68': { hp: 10, total: 13 },
+'128_15.36': { hp: 12, total: 17 },
+'256_7.68': { hp: 7, total: 9 },
+'256_15.36': { hp: 9, total: 12 },
+};
+function hpCalc() {
+const memGB = parseInt(document.getElementById('hp-mem').value) || 0;
+const disk = document.getElementById('hp-disk').value;
+const count = parseInt(document.getElementById('hp-count').value) || 0;
+const pcsz = document.getElementById('hp-pcsz').value;
+const key = pcsz + '_' + disk;
+const row = HP_TABLE[key];
+if (!row) { document.getElementById('hp-out').innerHTML = '&lt;p class="hp-warn"&gt;未找到对应的基准数据&lt;/p&gt;'; return; }
+if (memGB &lt;= 0 || count &lt;= 0) { document.getElementById('hp-out').innerHTML = '&lt;p class="hp-warn"&gt;请输入有效的内存和磁盘数量&lt;/p&gt;'; return; }
+const hpGB = row.hp * count + 10;
+const totalGB = row.total * count;
+const remainGB = memGB - totalGB;
+const totalHP = hpGB * 1024 / 2;
+const nodeHP = Math.ceil(totalHP / 2);
+const warnOrOk = remainGB &gt;= 0
+? `&lt;p class="hp-ok"&gt;内存充足，剩余 ${remainGB} GB 可供系统和其它进程使用&lt;/p&gt;`
+: `&lt;p class="hp-warn"&gt;内存不足！还需额外 ${Math.abs(remainGB)} GB，请减少磁盘数量或增大内存&lt;/p&gt;`;
+document.getElementById('hp-out').innerHTML = `
+&lt;div class="hp-results"&gt;
+&lt;div class="hp-result-item"&gt;&lt;span&gt;总大页内存需求&lt;/span&gt;&lt;span class="val"&gt;${hpGB} GB&lt;/span&gt;&lt;/div&gt;
+&lt;div class="hp-result-item"&gt;&lt;span&gt;总内存需求&lt;/span&gt;&lt;span class="val"&gt;${totalGB} GB&lt;/span&gt;&lt;/div&gt;
+&lt;div class="hp-result-item"&gt;&lt;span&gt;2MB 大页总数&lt;/span&gt;&lt;span class="val"&gt;${totalHP.toLocaleString()}&lt;/span&gt;&lt;/div&gt;
+&lt;div class="hp-result-item"&gt;&lt;span&gt;node0 大页数&lt;/span&gt;&lt;span class="val"&gt;${nodeHP.toLocaleString()}&lt;/span&gt;&lt;/div&gt;
+&lt;div class="hp-result-item"&gt;&lt;span&gt;node1 大页数&lt;/span&gt;&lt;span class="val"&gt;${nodeHP.toLocaleString()}&lt;/span&gt;&lt;/div&gt;
+${warnOrOk}
+&lt;/div&gt;`;
+}
+hpCalc();
+&lt;/script&gt;
+&lt;h2 id="配置方法"&gt;配置方法
+&lt;/h2&gt;&lt;p&gt;计算出大页数量后，在每个 NUMA node 上配置：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;span class="lnt"&gt;5
+&lt;/span&gt;&lt;span class="lnt"&gt;6
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# 临时生效&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;echo&lt;/span&gt; &amp;lt;node0大页数&amp;gt; &amp;gt; /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;echo&lt;/span&gt; &amp;lt;node1大页数&amp;gt; &amp;gt; /sys/devices/system/node/node1/hugepages/hugepages-2048kB/nr_hugepages
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# 永久生效（写入 /etc/sysctl.conf）&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;vm.nr_hugepages &lt;span class="o"&gt;=&lt;/span&gt; &amp;lt;大页总数&amp;gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;</description></item></channel></rss>
