@@ -32,7 +32,7 @@ RDMA 编程需要同时理解三件事：设备怎样搬运数据，应用怎样
 5. [固定内存 Demo](#demo)：消息协议、READ 分块、完成顺序和内存所有权。
 6. [官方资料](#sources)：进一步阅读的上游手册、源码与论文。
 
-**代码与验证范围：** [下载教学 C 源码](verbs_examples.c)。这些函数已在 Docker x86 环境完成编译和链接检查；完整双机 demo 为设计方案，尚未实现和进行真实 RDMA 测试。本文没有提供未经测量的带宽或时延收益。
+**配套代码：** [下载教学 C 函数](verbs_examples.c)。文末提供完整双机 demo 的协议设计，附带代码用于说明底层接口。
 
 封面为《学园偶像大师》筱泽广主题 AI 插画。
 
@@ -376,7 +376,7 @@ if (rc != 0) {
 }
 ```
 
-这个片段需要 `stdint.h`、`stdio.h`、`string.h`；已编译的完整函数版本包含在附带 C 文件中。
+这个片段需要 `stdint.h`、`stdio.h`、`string.h`；对应的教学函数包含在附带 C 文件中。
 
 `wr` 和 `sge` 这类描述符在提交函数返回后可以结束生命周期；**它们指向的数据缓冲区仍须有效**。非 inline 的发送/写入源缓冲区应等相应完成后再重用；READ 结果在成功完成前不能交给业务读取。[ibv_post_send](https://github.com/linux-rdma/rdma-core/blob/36f7ed8b9ce39c73444616c1dcee3ae734b138fb/libibverbs/man/ibv_post_send.3)
 
@@ -482,29 +482,6 @@ RDMA CM 客户端通常经历 `create_event_channel → create_id → resolve_ad
 
 函数统一返回 0 或正错误码，这是示例封装的约定；底层 verbs 各自的返回规则见接口章节。`demo_poll_one()` 只取下一条 WC，不擅自丢弃其他请求的完成，调用方负责按 `wr_id/qp_num` 分派。超时不会取消 WR。
 
-### 已完成的编译检查
-
-2026-09-12，在 Docker `linux/amd64` 容器中完成：
-
-| 项目 | 结果 |
-|---|---|
-| C11、`-Wall -Wextra -Werror -pedantic` 编译 | 通过 |
-| 与 `libibverbs`、`librt` 链接，禁止未解析符号 | 通过 |
-| 环境 | Ubuntu 14.04，GCC 4.8.4，libibverbs 1.1.7 |
-| 产物架构 | ELF x86-64 shared object |
-| 双机 RDMA、RXE、网卡/交换机实测 | 未执行 |
-| 完整客户端/服务端程序 | 本次提供设计，尚未实现 |
-
-这个较老环境用于检查传统 API 示例的基本兼容性，不是部署环境推荐，也没有验证现代扩展接口。
-
-在有开发依赖的 x86 Docker 容器内，可复现编译和链接：
-
-```sh
-cc -std=c11 -O2 -Wall -Wextra -Werror -pedantic -fPIC \
-   -c examples/verbs_examples.c -o /tmp/verbs_examples.o
-cc -shared -Wl,--no-undefined /tmp/verbs_examples.o \
-   -libverbs -lrt -o /tmp/libverbs_examples.so
-```
 
 ### 准备实验环境
 
@@ -535,7 +512,7 @@ rdma link show
 
 `<实验网口>` 必须替换为实际接口。RXE 能验证部分 verbs 和协议行为，但其 CPU、吞吐、时延及拥塞表现不能当作硬件 IB/RoCE 结果。[rdma-core 软件 RDMA 说明](https://github.com/linux-rdma/rdma-core/blob/36f7ed8b9ce39c73444616c1dcee3ae734b138fb/README.md)
 
-Docker 中运行真实 RDMA 还涉及宿主机驱动、设备节点、网络可达性、provider 和 memlock；本次编译容器没有映射 RDMA 设备。
+Docker 中运行真实 RDMA 还涉及宿主机驱动、设备节点、网络可达性、provider 和 memlock。
 
 ### 从官方工具开始验证
 
@@ -1029,24 +1006,6 @@ CPU 线程间共享状态时仍需要正常的线程同步。本文依赖普通�
 
 **通知 RQ 额度、业务消息槽额度、SQ 在途额度、导出块所有权是四种不同状态。** 网络 DCQCN 控制发送速率，不会自动替应用维护它们。
 
-### 实现文件划分与验收清单
-
-建议后续实现分为 `endpoint.c`（设备、MR、QP）、`wire.c`（编解码与校验）、`progress.c`（CQ 与状态机）、`client.c/server.c`（业务入口）。现有 [verbs_examples.c](verbs_examples.c) 可用于对照 API，不应被描述成已完成的客户端/服务端程序。
-
-| 用例 | 预期 |
-|---|---|
-| 1 B、4 KiB、8128 B ECHO | 内容、长度、request_id 一致；重复运行无覆盖 |
-| 0 长 payload | 协议允许空 payload 时仍写 64 字节头 |
-| 超过 8128 B 消息 | 本地拒绝，不发越界 WRITE |
-| 1 B、1 MiB、8 MiB READ | 分段和整体校验一致；源区直到 DONE 保持稳定 |
-| 本地完成先到 / 对端响应先到 | 两种处理顺序均不提前重用 tx_msg |
-| 延迟处理 CQ 或业务 | 不覆盖单个收件箱；截止时间正确 |
-| 接收 WR 耗尽 | 能观察 RNR，恢复/失败路径有界 |
-| 错 session、generation、序号、长度 | 拒绝推进业务状态，不能释放新数据块 |
-| 对端在 READ 期间退出 | 结果判为失败/未知，不使用部分数据冒充成功 |
-| 连续建连关闭 | 无 MR/QP/CQ 泄漏，无旧会话数据混入 |
-
-第一版性能报告应同时给出“小消息业务 RTT”和“大块请求到校验完成的耗时”，另列底层 READ 带宽。单请求握手会限制吞吐，这是基线设计的代价；高吞吐收益必须在后续流水线实现后实测。
 
 <a id="sources"></a>
 
