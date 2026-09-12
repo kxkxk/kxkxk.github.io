@@ -2,6 +2,7 @@
 title: 修复高版本vscode报错 远程主机不满足运行vs code服务器的先决条件
 description: 绝了
 date: 2025-11-26 20:25:00+0000
+image: cover.png
 
 categories:
     - 技术

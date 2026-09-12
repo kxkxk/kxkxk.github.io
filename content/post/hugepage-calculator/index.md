@@ -2,6 +2,7 @@
 title: SPDK 大页内存计算器
 description: 根据内存大小、磁盘容量和数量，计算所需的2MB大页内存数量
 date: 2025-05-08 12:00:00+0000
+image: cover.png
 
 categories:
     - 技术
