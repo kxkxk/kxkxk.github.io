@@ -1,0 +1,689 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>ARP on kxkxk's blog</title><link>https://kxkxk.github.io/tags/arp/</link><description>Recent content in ARP on kxkxk's blog</description><generator>Hugo -- gohugo.io</generator><language>zh-cn</language><lastBuildDate>Sat, 12 Sep 2026 14:30:00 +0800</lastBuildDate><atom:link href="https://kxkxk.github.io/tags/arp/index.xml" rel="self" type="application/rss+xml"/><item><title>Linux 路由表与多网卡 ARP：用不同网段解决出口冲突</title><link>https://kxkxk.github.io/p/linux-routing-multi-nic-arp/</link><pubDate>Sat, 12 Sep 2026 14:30:00 +0800</pubDate><guid>https://kxkxk.github.io/p/linux-routing-multi-nic-arp/</guid><description>&lt;img src="https://kxkxk.github.io/p/linux-routing-multi-nic-arp/cover.png" alt="Featured image of post Linux 路由表与多网卡 ARP：用不同网段解决出口冲突" /&gt;&lt;p&gt;多张网卡分别连接不同设备网络时，优先让每条独立链路使用&lt;strong&gt;互不重叠的 IP 网段&lt;/strong&gt;，并让链路两端的地址、掩码匹配。这样，目标 IP 能明确匹配到对应出口，ARP 也会在该出口寻找目标设备。&lt;/p&gt;
+&lt;p&gt;例如：网卡 A 和设备 A 使用 &lt;code&gt;192.168.10.0/24&lt;/code&gt;，网卡 B 和设备 B 使用 &lt;code&gt;192.168.20.0/24&lt;/code&gt;，Wi-Fi 使用 &lt;code&gt;192.168.0.0/24&lt;/code&gt;。这种拓扑通常只需要 &lt;code&gt;main&lt;/code&gt; 路由表，无须为每张网卡建立一张表。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;不同 IP 网段不等于不同广播域。&lt;/strong&gt; 如果两张网卡仍在同一交换机的同一 VLAN，ARP 广播仍可能同时到达两张网卡；仅改 IP 不能保证消除跨网卡 ARP 应答。下面分别说明选路、ARP 应答和二层隔离。&lt;/p&gt;
+&lt;p&gt;本文讨论 IPv4、以太网及普通 Wi-Fi 网络。所有地址、网卡名和输出均为教学示例，配置时需要对应到实际接口、设备地址和网络管理器。&lt;/p&gt;
+&lt;h2 id="先区分四个概念"&gt;先区分四个概念
+&lt;/h2&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;对象&lt;/th&gt;
+&lt;th&gt;解决什么问题&lt;/th&gt;
+&lt;th&gt;查看方式&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;网卡 IP 和掩码&lt;/td&gt;
+&lt;td&gt;本机使用什么地址，通常生成什么直连网段&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;ip -4 addr show&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;路由表&lt;/td&gt;
+&lt;td&gt;目标地址走哪个出口、哪个下一跳&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;ip -4 route show table main&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;策略路由规则&lt;/td&gt;
+&lt;td&gt;按源 IP、目标 IP、标记等条件决定查哪张表&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;ip -4 rule show&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;ARP/邻居表&lt;/td&gt;
+&lt;td&gt;已选定链路上的下一跳 IP 对应哪个 MAC&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;ip -4 neigh show&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;路由负责找出口；ARP 负责在该出口所在链路上找下一跳的 MAC。邻居项带有 &lt;code&gt;dev&lt;/code&gt;，不能把它理解成全机只有一份、不区分网卡的 IP→MAC 映射。&lt;a class="link" href="https://man7.org/linux/man-pages/man8/ip-neighbour.8.html" target="_blank" rel="noopener"
+&gt;邻居表手册&lt;/a&gt;&lt;/p&gt;
+&lt;h3 id="rt_tables-文件是什么"&gt;&lt;code&gt;rt_tables&lt;/code&gt; 文件是什么
+&lt;/h3&gt;&lt;p&gt;&lt;code&gt;/etc/iproute2/rt_tables&lt;/code&gt; 是路由表编号和名称的对应文件；部分安装还提供 &lt;code&gt;/usr/lib/iproute2/rt_tables&lt;/code&gt;。例如：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-text" data-lang="text"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;255 local
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;254 main
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;253 default
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;100 device_a
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;表&lt;/th&gt;
+&lt;th&gt;用途&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;local&lt;/code&gt;，255&lt;/td&gt;
+&lt;td&gt;本机地址、广播地址等特殊路由，通常由系统维护&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;main&lt;/code&gt;，254&lt;/td&gt;
+&lt;td&gt;普通直连路由、静态路由、默认路由通常放在这里&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;default&lt;/code&gt;，253&lt;/td&gt;
+&lt;td&gt;默认规则链末尾使用的表，初始通常为空；名字不代表默认网关&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;自定义表，如 100&lt;/td&gt;
+&lt;td&gt;供策略路由使用；编号是否空闲需自行检查&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;写入 &lt;code&gt;100 device_a&lt;/code&gt; 只是取名。添加路由靠 &lt;code&gt;ip route ... table 100&lt;/code&gt;，选择该表靠相应规则；直接用数字就可以，不必先改 &lt;code&gt;rt_tables&lt;/code&gt; 文件。&lt;a class="link" href="https://man7.org/linux/man-pages/man8/ip-route.8.html" target="_blank" rel="noopener"
+&gt;路由表手册&lt;/a&gt;、&lt;a class="link" href="https://man7.org/linux/man-pages/man8/ip-rule.8.html" target="_blank" rel="noopener"
+&gt;策略路由手册&lt;/a&gt;&lt;/p&gt;
+&lt;h2 id="什么才算不同网段"&gt;什么才算“不同网段”
+&lt;/h2&gt;&lt;p&gt;网段由 &lt;strong&gt;IP 地址和掩码共同决定&lt;/strong&gt;。&lt;code&gt;/24&lt;/code&gt; 是掩码 &lt;code&gt;255.255.255.0&lt;/code&gt;，&lt;code&gt;/16&lt;/code&gt; 是 &lt;code&gt;255.255.0.0&lt;/code&gt;。&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;网卡 A 地址&lt;/th&gt;
+&lt;th&gt;网卡 B 地址&lt;/th&gt;
+&lt;th&gt;判断&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;192.168.1.10/24&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;192.168.1.20/24&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;同一网段，都是 &lt;code&gt;192.168.1.0/24&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;192.168.10.10/24&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;192.168.20.10/24&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;不重叠，适合分别连接两条独立设备链路&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;192.168.10.10/16&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;192.168.20.10/16&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;仍是同一网段：&lt;code&gt;192.168.0.0/16&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;192.168.10.10/16&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;192.168.20.10/24&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;网段重叠，后者包含在前者中&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;192.168.1.10/25&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;192.168.1.130/25&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;不重叠，分别属于 &lt;code&gt;.0/25&lt;/code&gt; 和 &lt;code&gt;.128/25&lt;/code&gt;&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;所以，“第三段数字不一样”只有结合掩码才有意义。规划新网段时，还要检查 Wi-Fi、有线、VPN、容器和已有静态路由，避免意外重叠。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;同一条直连链路的两端应配置在同一子网内；不同独立链路应使用互不重叠的子网。&lt;/strong&gt; 只改电脑 IP、设备仍保留旧 IP 和掩码，不构成完整迁移。&lt;/p&gt;
+&lt;h2 id="一个数据包如何找到网卡和-mac"&gt;一个数据包如何找到网卡和 MAC
+&lt;/h2&gt;&lt;p&gt;以下是本机访问其他设备时的简化流程；本机地址访问会由 &lt;code&gt;local&lt;/code&gt; 路由直接处理，不需要通过网线。&lt;/p&gt;
+&lt;p&gt;&lt;a class="link" href="route-arp-flow.svg" &gt;&lt;img src="https://kxkxk.github.io/p/linux-routing-multi-nic-arp/route-arp-flow.svg"
+loading="lazy"
+alt="从策略路由、路由表到 ARP 邻居解析的流程"
+&gt;&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;直接访问 &lt;code&gt;192.168.10.100&lt;/code&gt; 时，如果路由是 &lt;code&gt;192.168.10.0/24 dev enp2s0&lt;/code&gt;，就从 &lt;code&gt;enp2s0&lt;/code&gt; 查询 &lt;strong&gt;设备 &lt;code&gt;.100&lt;/code&gt; 的 MAC&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;访问远端地址时，如果选中的路由是 &lt;code&gt;default via 192.168.0.1 dev wlan0&lt;/code&gt;，则查询 &lt;strong&gt;网关 &lt;code&gt;192.168.0.1&lt;/code&gt; 的 MAC&lt;/strong&gt;，而不是在本地广播询问远端服务器的 MAC。ARP 用来解析本链路下一跳；普通三层路由转发不会把收到的 ARP 广播转发到另一网段。&lt;a class="link" href="https://man7.org/linux/man-pages/man7/arp.7.html" target="_blank" rel="noopener"
+&gt;ARP 手册&lt;/a&gt;&lt;/p&gt;
+&lt;h3 id="选路顺序规则优先级前缀长度metric"&gt;选路顺序：规则优先级、前缀长度、metric
+&lt;/h3&gt;&lt;p&gt;常见默认规则为：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-text" data-lang="text"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;0: from all lookup local
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;32766: from all lookup main
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;32767: from all lookup default
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;规则的优先级数值越小，越先检查。对普通 &lt;code&gt;lookup&lt;/code&gt; 规则，表内没有可用匹配时通常继续下一条规则；成功得到路由后即结束查找。&lt;code&gt;unreachable&lt;/code&gt; 等终止动作另有处理。&lt;a class="link" href="https://man7.org/linux/man-pages/man8/ip-rule.8.html" target="_blank" rel="noopener"
+&gt;策略路由手册&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;在同一张表内，普通目的地址选路优先匹配更长的前缀：&lt;code&gt;/32&lt;/code&gt; 主机路由比 &lt;code&gt;/24&lt;/code&gt; 更具体，&lt;code&gt;/24&lt;/code&gt; 比默认路由 &lt;code&gt;/0&lt;/code&gt; 更具体。同前缀且其他条件可比时，通常优先较小的 &lt;code&gt;metric&lt;/code&gt;。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;最长前缀匹配不是把所有表放在一起比较。&lt;/strong&gt; 如果 VPN 的高优先级规则先在另一张表里得到路由，&lt;code&gt;main&lt;/code&gt; 中的 &lt;code&gt;/32&lt;/code&gt; 也可能没有机会参与选择。应结合 &lt;code&gt;ip rule&lt;/code&gt; 和 &lt;code&gt;ip route get&lt;/code&gt; 判断。&lt;a class="link" href="https://man7.org/linux/man-pages/man8/ip-route.8.html" target="_blank" rel="noopener"
+&gt;路由查询手册&lt;/a&gt;&lt;/p&gt;
+&lt;h2 id="多网卡同网段为什么容易出问题"&gt;多网卡同网段为什么容易出问题
+&lt;/h2&gt;&lt;h3 id="same-subnet-independent-links"&gt;两张网卡连接两个独立网络，却配置了同一网段
+&lt;/h3&gt;&lt;p&gt;假设物理连接如下，设备 A、B 所在链路没有通过交换机或网桥连通：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-text" data-lang="text"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;电脑 enp2s0：192.168.1.10/24 ── 设备 A：192.168.1.100/24
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;电脑 enp3s0：192.168.1.20/24 ── 设备 B：192.168.1.200/24
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;可能存在两条相同前缀的路由：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-text" data-lang="text"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;192.168.1.0/24 dev enp2s0 proto kernel scope link src 192.168.1.10 metric 100
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;192.168.1.0/24 dev enp3s0 proto kernel scope link src 192.168.1.20 metric 200
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;根据上述选路机制，访问设备 B 的 &lt;code&gt;192.168.1.200&lt;/code&gt; 可能仍选择 &lt;code&gt;enp2s0&lt;/code&gt;。随后 ARP 在设备 A 的链路询问 &lt;code&gt;.200&lt;/code&gt;，设备 B 根本收不到请求。&lt;/p&gt;
+&lt;p&gt;这里的推导是：&lt;strong&gt;路由先选错了链路，ARP 才表现为无人应答。&lt;/strong&gt; 不能只看到 &lt;code&gt;INCOMPLETE&lt;/code&gt; 或 &lt;code&gt;FAILED&lt;/code&gt; 就判断设备网卡坏了。&lt;/p&gt;
+&lt;p&gt;调低 &lt;code&gt;enp3s0&lt;/code&gt; 的 metric，会让这整个 &lt;code&gt;/24&lt;/code&gt; 更倾向于 &lt;code&gt;enp3s0&lt;/code&gt;，又可能影响设备 A。普通单路径选路不会因为一次 ARP 失败，就自动去另一张网卡寻找同一 IP。&lt;/p&gt;
+&lt;h3 id="两张网卡在同一个二层广播域"&gt;两张网卡在同一个二层广播域
+&lt;/h3&gt;&lt;p&gt;如果两张网卡接在同一交换机的同一 VLAN，一个 ARP 广播可能到达两张网卡。&lt;/p&gt;
+&lt;p&gt;Linux 默认允许对本机其他接口上的 IP 回应 ARP。例如，查询 &lt;code&gt;enp2s0&lt;/code&gt; 的 IP 时，&lt;code&gt;enp3s0&lt;/code&gt; 也可能应答，导致对端把这个 IP 学习到 &lt;code&gt;enp3s0&lt;/code&gt; 的 MAC。这类跨接口应答可能引起通常所说的 &lt;strong&gt;ARP flux&lt;/strong&gt;；实际行为取决于内核参数和拓扑，不保证每次都会出现。&lt;a class="link" href="https://docs.kernel.org/networking/ip-sysctl.html" target="_blank" rel="noopener"
+&gt;Linux 内核 ARP 参数说明&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;它与“两台设备用了相同 IP”是不同问题；也不能把交换机的 MAC→端口学习表与主机的 IP→MAC 邻居表混为一谈。&lt;/p&gt;
+&lt;h3 id="网段与广播域各解决一层问题"&gt;网段与广播域各解决一层问题
+&lt;/h3&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;配置方式&lt;/th&gt;
+&lt;th&gt;IP 选路&lt;/th&gt;
+&lt;th&gt;ARP 广播范围&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;独立链路 + 同一 IP 网段&lt;/td&gt;
+&lt;td&gt;存在重叠出口&lt;/td&gt;
+&lt;td&gt;两条链路已隔离，但请求可能发错链路&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;独立链路 + 不重叠 IP 网段&lt;/td&gt;
+&lt;td&gt;通常明确&lt;/td&gt;
+&lt;td&gt;各链路独立&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;同一 VLAN + 不重叠 IP 网段&lt;/td&gt;
+&lt;td&gt;通常明确&lt;/td&gt;
+&lt;td&gt;仍共享广播域，跨接口应答仍需考虑&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;不同 VLAN + 不重叠 IP 网段&lt;/td&gt;
+&lt;td&gt;通常明确&lt;/td&gt;
+&lt;td&gt;VLAN 配置正确时隔离广播域&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;这里“通常明确”假设没有额外策略规则或更具体路由改变出口。VLAN 是二层广播域划分机制；改变 IP 掩码不会让交换机端口自动进入不同 VLAN。&lt;a class="link" href="https://docs.kernel.org/networking/bridge.html#vlan" target="_blank" rel="noopener"
+&gt;Linux 内核 VLAN 说明&lt;/a&gt;&lt;/p&gt;
+&lt;h2 id="推荐方案每条设备链路分配独立网段"&gt;推荐方案：每条设备链路分配独立网段
+&lt;/h2&gt;&lt;h3 id="地址规划"&gt;地址规划
+&lt;/h3&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;用途&lt;/th&gt;
+&lt;th&gt;本机接口&lt;/th&gt;
+&lt;th&gt;本机 IP&lt;/th&gt;
+&lt;th&gt;对端 IP&lt;/th&gt;
+&lt;th&gt;网段&lt;/th&gt;
+&lt;th&gt;本机是否配置默认网关&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;Wi-Fi 上网&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;wlan0&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;192.168.0.50/24&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;路由器 &lt;code&gt;192.168.0.1&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;192.168.0.0/24&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;是，由现有上网连接提供&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;设备 A 专线&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;enp2s0&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;192.168.10.10/24&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;192.168.10.100/24&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;192.168.10.0/24&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;否&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;设备 B 专线&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;enp3s0&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;192.168.20.10/24&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;192.168.20.100/24&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;192.168.20.0/24&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;否&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;&lt;a class="link" href="multi-nic-topology.svg" &gt;&lt;img src="https://kxkxk.github.io/p/linux-routing-multi-nic-arp/multi-nic-topology.svg"
+loading="lazy"
+alt="Wi-Fi 上网与两条独立设备网段的网络拓扑"
+&gt;&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;设备 A、B 分别直连电脑，或使用相互隔离的交换网络/VLAN。不要再通过其他桥接把两条链路合并。&lt;/p&gt;
+&lt;h3 id="预期路由"&gt;预期路由
+&lt;/h3&gt;&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-text" data-lang="text"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;default via 192.168.0.1 dev wlan0
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;192.168.0.0/24 dev wlan0 proto kernel scope link src 192.168.0.50
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;192.168.10.0/24 dev enp2s0 proto kernel scope link src 192.168.10.10
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;192.168.20.0/24 dev enp3s0 proto kernel scope link src 192.168.20.10
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;code&gt;dev&lt;/code&gt; 是出口，&lt;code&gt;via&lt;/code&gt; 是网关，&lt;code&gt;scope link&lt;/code&gt; 表示直接在链路上可达，&lt;code&gt;src&lt;/code&gt; 是这条路由偏好的本机源地址；实际输出还可能有 metric 等字段。&lt;/p&gt;
+&lt;p&gt;访问 A 时，&lt;code&gt;.10.100&lt;/code&gt; 匹配 &lt;code&gt;192.168.10.0/24&lt;/code&gt;；访问 B 时，&lt;code&gt;.20.100&lt;/code&gt; 匹配 &lt;code&gt;192.168.20.0/24&lt;/code&gt;。两者不再争用相同的 &lt;code&gt;/24&lt;/code&gt; 路由。这是主方案能消除前述出口冲突的原因。&lt;/p&gt;
+&lt;p&gt;&lt;strong&gt;直连通信不需要网关。&lt;/strong&gt; &lt;code&gt;.1&lt;/code&gt; 没有特殊魔法，只有该地址确实运行路由转发、且提供所需路径时，才能把它当网关。电脑分别访问 A 和 B，也不要求开启 IP 转发；设备 A 经电脑访问设备 B 则属于另一项路由转发配置。&lt;/p&gt;
+&lt;h2 id="如何配置"&gt;如何配置
+&lt;/h2&gt;&lt;h3 id="先确认实际接口和旧配置"&gt;先确认实际接口和旧配置
+&lt;/h3&gt;&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;ip -br link
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;ip -br -4 addr
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;ip -4 rule show
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;ip -4 route show table all
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;下文使用 &lt;code&gt;enp2s0&lt;/code&gt;、&lt;code&gt;enp3s0&lt;/code&gt; 作为示例。应通过 MAC、连线、连接状态确认接口身份，并记录旧地址、路由和连接配置。修改正在承载 SSH 会话的地址会断开该连接，应使用本地终端或其他管理链路完成切换。&lt;/p&gt;
+&lt;h3 id="临时配置适合不由网络管理服务覆盖的实验接口"&gt;临时配置：适合不由网络管理服务覆盖的实验接口
+&lt;/h3&gt;&lt;p&gt;先在设备自身的管理入口中，把 A 改成 &lt;code&gt;192.168.10.100/24&lt;/code&gt;，B 改成 &lt;code&gt;192.168.20.100/24&lt;/code&gt;；同时更新软件中使用这些设备地址的配置。两台设备只与本机直连通信时，不需要给它们虚构默认网关。&lt;/p&gt;
+&lt;p&gt;本机添加新地址：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo ip link &lt;span class="nb"&gt;set&lt;/span&gt; dev enp2s0 up
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo ip link &lt;span class="nb"&gt;set&lt;/span&gt; dev enp3s0 up
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo ip addr add 192.168.10.10/24 dev enp2s0
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo ip addr add 192.168.20.10/24 dev enp3s0
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;通常会自动生成对应直连路由。&lt;code&gt;noprefixroute&lt;/code&gt;、接口状态或网络管理工具可能改变这一行为，仍需查看路由确认。&lt;a class="link" href="https://man7.org/linux/man-pages/man8/ip-address.8.html" target="_blank" rel="noopener"
+&gt;IP 地址配置手册&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;验证新地址可达后，再删除原来造成重叠的地址。以下旧地址仅对应上文的&lt;a class="link" href="#same-subnet-independent-links" &gt;独立链路同网段示例&lt;/a&gt;：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo ip addr del 192.168.1.10/24 dev enp2s0
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo ip addr del 192.168.1.20/24 dev enp3s0
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;ip -4 route show table main
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;检查旧网段是否还有其他地址或手工路由保留；有则按原条目逐项处理。只加新地址、长期保留旧的重叠地址，会留下原来的问题。不要用全局 &lt;code&gt;flush&lt;/code&gt; 代替定向修改。&lt;/p&gt;
+&lt;p&gt;&lt;code&gt;ip addr&lt;/code&gt;/&lt;code&gt;ip route&lt;/code&gt; 修改当前内核运行状态，通常不持久化。NetworkManager 管理的接口优先按下一节修改连接配置，避免连接重启后恢复旧地址。&lt;/p&gt;
+&lt;h3 id="networkmanager-持久化配置"&gt;NetworkManager 持久化配置
+&lt;/h3&gt;&lt;p&gt;先查连接名称与对应接口：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;nmcli device status
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;nmcli -f NAME,UUID,TYPE,DEVICE connection show
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;假设两个实际连接名分别为 &lt;code&gt;设备A连接&lt;/code&gt;、&lt;code&gt;设备B连接&lt;/code&gt;，且它们是专用设备连接。先记录配置：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;nmcli connection show &lt;span class="s1"&gt;&amp;#39;设备A连接&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;nmcli connection show &lt;span class="s1"&gt;&amp;#39;设备B连接&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;设置新的静态地址，并禁止设备专线成为 IPv4 默认出口：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;span class="lnt"&gt;11
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo nmcli connection modify &lt;span class="s1"&gt;&amp;#39;设备A连接&amp;#39;&lt;/span&gt; &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; ipv4.method manual &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; ipv4.addresses &lt;span class="s1"&gt;&amp;#39;192.168.10.10/24&amp;#39;&lt;/span&gt; &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; ipv4.gateway &lt;span class="s1"&gt;&amp;#39;&amp;#39;&lt;/span&gt; &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; ipv4.never-default yes
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo nmcli connection modify &lt;span class="s1"&gt;&amp;#39;设备B连接&amp;#39;&lt;/span&gt; &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; ipv4.method manual &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; ipv4.addresses &lt;span class="s1"&gt;&amp;#39;192.168.20.10/24&amp;#39;&lt;/span&gt; &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; ipv4.gateway &lt;span class="s1"&gt;&amp;#39;&amp;#39;&lt;/span&gt; &lt;span class="se"&gt;\
+&lt;/span&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt; ipv4.never-default yes
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;这里赋值 &lt;code&gt;ipv4.addresses&lt;/code&gt; 会替换该连接的地址列表。已有额外业务地址时，应重新规划后明确保留。&lt;code&gt;ipv4.never-default yes&lt;/code&gt; 用来阻止 NetworkManager 为此连接分配 IPv4 默认路由。&lt;a class="link" href="https://networkmanager.dev/docs/api/latest/settings-ipv4.html" target="_blank" rel="noopener"
+&gt;NetworkManager IPv4 配置说明&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;还应检查连接中的 &lt;code&gt;ipv4.routes&lt;/code&gt;、&lt;code&gt;ipv4.routing-rules&lt;/code&gt; 及 DNS 设置，按原值移除已经失效的配置；上面的命令不会自动清理所有历史静态路由或其他程序的规则。&lt;/p&gt;
+&lt;p&gt;设备端地址迁移完成后，重新激活对应连接：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo nmcli connection up &lt;span class="s1"&gt;&amp;#39;设备A连接&amp;#39;&lt;/span&gt; ifname enp2s0
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo nmcli connection up &lt;span class="s1"&gt;&amp;#39;设备B连接&amp;#39;&lt;/span&gt; ifname enp3s0
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;&lt;code&gt;connection modify&lt;/code&gt; 保存连接配置，&lt;code&gt;connection up&lt;/code&gt; 使连接配置生效。已有连接重启可能中断通信；连接名不唯一时使用 UUID。&lt;a class="link" href="https://networkmanager.dev/docs/api/latest/nmcli.html" target="_blank" rel="noopener"
+&gt;nmcli 手册&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;若接口由 Netplan、systemd-networkd 或 ifupdown 管理，应修改该系统的配置来源，保持相同地址规划。不要让多个配置工具竞争管理同一接口。&lt;/p&gt;
+&lt;h2 id="如何确认确实解决了问题"&gt;如何确认确实解决了问题
+&lt;/h2&gt;&lt;h3 id="第一步检查内核准备怎样选路"&gt;第一步：检查内核准备怎样选路
+&lt;/h3&gt;&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;ip -4 route get 192.168.10.100
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;ip -4 route get 192.168.20.100
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;ip -4 route get 1.1.1.1
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;预期关键字段：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-text" data-lang="text"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;192.168.10.100 dev enp2s0 src 192.168.10.10
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;192.168.20.100 dev enp3s0 src 192.168.20.10
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;1.1.1.1 via 192.168.0.1 dev wlan0 src 192.168.0.50
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;这是路由查询，不会主动向这些目标发包；查询正确只能证明给定条件下的选路结果。应用如果绑定源地址、接口或设置路由标记，还要模拟相同条件，例如 &lt;code&gt;ip -4 route get 192.168.20.100 from 192.168.20.10&lt;/code&gt;。&lt;a class="link" href="https://man7.org/linux/man-pages/man8/ip-route.8.html" target="_blank" rel="noopener"
+&gt;路由查询手册&lt;/a&gt;&lt;/p&gt;
+&lt;h3 id="第二步检查实际通信和邻居项"&gt;第二步：检查实际通信和邻居项
+&lt;/h3&gt;&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;ping -c &lt;span class="m"&gt;3&lt;/span&gt; 192.168.10.100
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;ping -c &lt;span class="m"&gt;3&lt;/span&gt; 192.168.20.100
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;ip -4 neigh show dev enp2s0
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;ip -4 neigh show dev enp3s0
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;先使用不强制接口的 ping，确认默认选路符合预期。&lt;code&gt;ping -I enp2s0 ...&lt;/code&gt; 可以辅助诊断，但强制接口成功不等于普通应用也会走该接口。&lt;/p&gt;
+&lt;p&gt;预期 A 的 MAC 出现在 &lt;code&gt;enp2s0&lt;/code&gt; 对应邻居项中，B 的 MAC 出现在 &lt;code&gt;enp3s0&lt;/code&gt; 对应邻居项中。&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;邻居状态&lt;/th&gt;
+&lt;th&gt;含义与下一步&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;REACHABLE&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;最近确认可达&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;STALE&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;缓存仍可使用，但可达性需要后续确认；本身不代表故障&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;INCOMPLETE&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;正在解析，尚未获得可用链路层地址&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;FAILED&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;探测失败；检查出口、链路、对端和广播域&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;邻居状态描述的是下一跳可达性，不直接说明 TCP/UDP 业务服务是否正常。&lt;a class="link" href="https://man7.org/linux/man-pages/man8/ip-neighbour.8.html" target="_blank" rel="noopener"
+&gt;邻居状态手册&lt;/a&gt;&lt;/p&gt;
+&lt;h3 id="第三步在两张网卡上抓包"&gt;第三步：在两张网卡上抓包
+&lt;/h3&gt;&lt;p&gt;分别在两个终端运行，再触发上面的 ping：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo tcpdump -n -e -i enp2s0 &lt;span class="s1"&gt;&amp;#39;arp or icmp&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo tcpdump -n -e -i enp3s0 &lt;span class="s1"&gt;&amp;#39;arp or icmp&amp;#39;&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;访问设备 A 且需要重新解析邻居时，预期在 &lt;code&gt;enp2s0&lt;/code&gt; 看见类似请求和应答：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-text" data-lang="text"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;ARP, Request who-has 192.168.10.100 tell 192.168.10.10
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;ARP, Reply 192.168.10.100 is-at &amp;lt;设备A的MAC&amp;gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;MAC 占位符应与设备实际身份一致。在本例的独立链路拓扑下，设备 B 的链路不应收到这次发往 A 的 ARP 广播。若已有缓存，没看到新的 ARP 请求是正常的，应同时观察实际 IP 流量。&lt;/p&gt;
+&lt;p&gt;需要强制重学时，可在确认目标后仅删除指定邻居项，然后再访问：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo ip neigh del 192.168.10.100 dev enp2s0
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;该项不存在时会报错，表示无需删除。清缓存只是验证手段；如果原选路仍错误，清完还会再次发错接口。&lt;/p&gt;
+&lt;h3 id="验收条件"&gt;验收条件
+&lt;/h3&gt;&lt;ul&gt;
+&lt;li&gt;所有设备链路的实际 IP/掩码符合规划，旧的重叠地址和失效路由已处理。&lt;/li&gt;
+&lt;li&gt;&lt;code&gt;ip route get&lt;/code&gt; 的出口和源地址符合预期；代理/VPN 启用时仍检查实际规则。&lt;/li&gt;
+&lt;li&gt;两台设备分别能完成业务通信，且 MAC、接口与物理连接对应。&lt;/li&gt;
+&lt;li&gt;同时访问 A、B 时均正常；单独断开一条设备专线后，另一条仍可通信。&lt;/li&gt;
+&lt;li&gt;重连或重启后配置仍正确，原有上网连接仍正常。&lt;/li&gt;
+&lt;/ul&gt;
+&lt;p&gt;ARP 应答、ping 成功和业务成功是不同层次的证据；设备禁用 ICMP 时，应结合抓包与实际服务验证。&lt;/p&gt;
+&lt;h2 id="网段无法调整或划分后仍有问题怎么办"&gt;网段无法调整，或划分后仍有问题怎么办
+&lt;/h2&gt;&lt;h3 id="同一-vlan-下仍出现跨网卡-arp-应答"&gt;同一 VLAN 下仍出现跨网卡 ARP 应答
+&lt;/h3&gt;&lt;p&gt;优先确认是否确实需要两张独立三层网卡接入同一二层网络。可按用途划分 VLAN；如果目标是链路冗余，可评估 bonding；如果一张网卡就能覆盖整个设备网络，也可简化拓扑。&lt;/p&gt;
+&lt;p&gt;必须保留现状时，检查接口级 ARP 参数。下表是参数含义，不是要求把所有参数一并打开的配置清单：&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;参数&lt;/th&gt;
+&lt;th&gt;作用&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;arp_ignore=1&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;对收到的 ARP 请求，仅在目标 IP 配置于入接口时应答&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;arp_announce=2&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;发 ARP 请求时优先选择出口上适合目标子网的本机地址；无合适地址仍有回退规则&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;arp_filter=1&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;依据反向选路结果限制 ARP 应答；同网段多网卡场景需要配套源策略路由&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;rp_filter=1/2&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;对收到的 IPv4 包做严格/宽松反向路径检查，可能影响非对称通信；它不负责 ARP 解析&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;对 &lt;code&gt;arp_ignore&lt;/code&gt;、&lt;code&gt;arp_announce&lt;/code&gt;、&lt;code&gt;rp_filter&lt;/code&gt;，有效值取 &lt;code&gt;all&lt;/code&gt; 与接口配置的较大值；&lt;code&gt;arp_filter&lt;/code&gt; 在任一处启用即生效。因此排查时两处都要看。&lt;a class="link" href="https://docs.kernel.org/networking/ip-sysctl.html" target="_blank" rel="noopener"
+&gt;Linux 内核网络参数说明&lt;/a&gt;&lt;/p&gt;
+&lt;p&gt;只针对跨接口应答，可先读取相关值：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sysctl net.ipv4.conf.all.arp_ignore
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sysctl net.ipv4.conf.enp2s0.arp_ignore
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sysctl net.ipv4.conf.enp3s0.arp_ignore
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;确认所需行为后，接口级临时配置示例为：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo sysctl -w net.ipv4.conf.enp2s0.arp_ignore&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="m"&gt;1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo sysctl -w net.ipv4.conf.enp3s0.arp_ignore&lt;span class="o"&gt;=&lt;/span&gt;&lt;span class="m"&gt;1&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;若 &lt;code&gt;all&lt;/code&gt; 原值更大，应先理解其含义；上述设置不会覆盖更大的全局有效值。验证应答确实来自预期网卡后，再将需要的配置交由 &lt;code&gt;/etc/sysctl.d/&lt;/code&gt; 等系统持久化机制管理。它不能修复&lt;a class="link" href="#same-subnet-independent-links" &gt;独立链路同网段示例&lt;/a&gt;中“目的网段重叠、出口选错”的问题。&lt;/p&gt;
+&lt;h3 id="两台设备不能改网段但目标-ip-不相同"&gt;两台设备不能改网段，但目标 IP 不相同
+&lt;/h3&gt;&lt;p&gt;沿用上文的&lt;a class="link" href="#same-subnet-independent-links" &gt;独立链路同网段拓扑&lt;/a&gt;：A 固定为 &lt;code&gt;192.168.1.100&lt;/code&gt;，B 固定为 &lt;code&gt;192.168.1.200&lt;/code&gt;，两者物理上分属独立链路。可以针对各个设备增加更具体的主机路由：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo ip route replace 192.168.1.100/32 dev enp2s0 src 192.168.1.10
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo ip route replace 192.168.1.200/32 dev enp3s0 src 192.168.1.20
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;这是前缀匹配机制的一种应用：不同目的 IP 分别命中各自 &lt;code&gt;/32&lt;/code&gt;。前提是对应本机旧地址仍按&lt;a class="link" href="#same-subnet-independent-links" &gt;原拓扑&lt;/a&gt;配置，设备确实在该链路，且没有更早的策略规则截走流量。它适合少数固定目标，不能代替整个网络的地址规划；还需持久化并验证设备回程。&lt;/p&gt;
+&lt;h3 id="两台设备连-ip-都相同"&gt;两台设备连 IP 都相同
+&lt;/h3&gt;&lt;p&gt;若 A、B 都固定为 &lt;code&gt;192.168.1.100&lt;/code&gt;，仅靠同一张表按目的 IP 选路，无法表达“这次找 A、下次找 B”。给两张网卡设置不同本机 IP，不会改变远端目标地址相同这一事实。&lt;/p&gt;
+&lt;p&gt;需要额外区分流量上下文，例如应用选择不同源地址并配套策略路由、绑定接口，或使用 network namespace/VRF 隔离。具体方案取决于应用能否指定这些条件；普通 &lt;code&gt;connect(192.168.1.100)&lt;/code&gt; 不会自动知道指的是哪台设备。&lt;/p&gt;
+&lt;h3 id="vpntun-改变了实际出口"&gt;VPN/TUN 改变了实际出口
+&lt;/h3&gt;&lt;p&gt;如果 &lt;code&gt;ip route get&lt;/code&gt; 显示流量进入隧道，应查看 &lt;code&gt;ip rule&lt;/code&gt; 和对应表，确认是代理规则还是普通路由产生了结果。需要对设备流量设置定向绕行时，在实际生效的规则/连接配置中实现，并重新查询验证。往 &lt;code&gt;rt_tables&lt;/code&gt; 文件增加一个名字不会产生绕行效果。&lt;/p&gt;
+&lt;h2 id="什么时候才需要多张路由表"&gt;什么时候才需要多张路由表
+&lt;/h2&gt;&lt;p&gt;&lt;strong&gt;不同目标网段走不同网卡，通常一张 &lt;code&gt;main&lt;/code&gt; 表即可。&lt;/strong&gt; 多表适用于还要根据源地址、入口或标记选择路径的情况，例如双上联网卡分别经各自网关访问同一个远端网络。&lt;/p&gt;
+&lt;p&gt;以下是独立于前文设备专线的教学例子：&lt;code&gt;wan_a&lt;/code&gt; 地址为 &lt;code&gt;10.10.0.2/24&lt;/code&gt;、网关为 &lt;code&gt;10.10.0.1&lt;/code&gt;；&lt;code&gt;wan_b&lt;/code&gt; 地址为 &lt;code&gt;10.20.0.2/24&lt;/code&gt;、网关为 &lt;code&gt;10.20.0.1&lt;/code&gt;。假设表号 100、200 和规则优先级 1000、1010 均未使用：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt; 1
+&lt;/span&gt;&lt;span class="lnt"&gt; 2
+&lt;/span&gt;&lt;span class="lnt"&gt; 3
+&lt;/span&gt;&lt;span class="lnt"&gt; 4
+&lt;/span&gt;&lt;span class="lnt"&gt; 5
+&lt;/span&gt;&lt;span class="lnt"&gt; 6
+&lt;/span&gt;&lt;span class="lnt"&gt; 7
+&lt;/span&gt;&lt;span class="lnt"&gt; 8
+&lt;/span&gt;&lt;span class="lnt"&gt; 9
+&lt;/span&gt;&lt;span class="lnt"&gt;10
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo ip route add 10.10.0.0/24 dev wan_a src 10.10.0.2 table &lt;span class="m"&gt;100&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo ip route add default via 10.10.0.1 dev wan_a table &lt;span class="m"&gt;100&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo ip route add 10.20.0.0/24 dev wan_b src 10.20.0.2 table &lt;span class="m"&gt;200&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo ip route add default via 10.20.0.1 dev wan_b table &lt;span class="m"&gt;200&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo ip rule add priority &lt;span class="m"&gt;1000&lt;/span&gt; from 10.10.0.2/32 lookup &lt;span class="m"&gt;100&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;sudo ip rule add priority &lt;span class="m"&gt;1010&lt;/span&gt; from 10.20.0.2/32 lookup &lt;span class="m"&gt;200&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;ip -4 route get 1.1.1.1 from 10.10.0.2
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;ip -4 route get 1.1.1.1 from 10.20.0.2
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;这里分别按已确定的源 IP 选择表；应用未指定源地址时，不应假设系统会自动在两条上联间分流。真实部署还要补齐其他本地网络路由或优先规则，否则这些表里的默认路由可能把跨本地网段流量也交给上联网关。示例没有进行持久化配置。&lt;a class="link" href="https://man7.org/linux/man-pages/man8/ip-rule.8.html" target="_blank" rel="noopener"
+&gt;策略路由匹配条件&lt;/a&gt;&lt;/p&gt;
+&lt;h2 id="现场排查速查表"&gt;现场排查速查表
+&lt;/h2&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;现象&lt;/th&gt;
+&lt;th&gt;先看什么&lt;/th&gt;
+&lt;th&gt;如何判断&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;插第二张网卡后第一台设备不通&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;ip route get &amp;lt;目标&amp;gt;&lt;/code&gt;、所有地址及掩码&lt;/td&gt;
+&lt;td&gt;是否出现重叠网段、出口改变&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;网卡是 UP，但设备不通&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;ip -br link&lt;/code&gt;、邻居表、两端抓包&lt;/td&gt;
+&lt;td&gt;管理状态 UP 不等于物理链路和邻居可达&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;ARP 请求发出却没有应答&lt;/td&gt;
+&lt;td&gt;请求所在网卡、VLAN、目标 IP&lt;/td&gt;
+&lt;td&gt;是否发错链路，设备是否配置正确并在线&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;同一个本机 IP 对应不同网卡的 MAC&lt;/td&gt;
+&lt;td&gt;对端邻居表、两接口 ARP 应答&lt;/td&gt;
+&lt;td&gt;检查跨接口代答；不能仅据此断言重复 IP&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;ARP 正常但 ping/业务不通&lt;/td&gt;
+&lt;td&gt;ICMP/TCP/UDP 抓包、回程、监听地址、防火墙、&lt;code&gt;rp_filter&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;问题可能已在 IP 或应用层&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;指定接口能通，普通程序不通&lt;/td&gt;
+&lt;td&gt;普通 &lt;code&gt;ip route get&lt;/code&gt;、应用绑定条件&lt;/td&gt;
+&lt;td&gt;强制接口测试绕过了什么默认选路条件&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;重启或重连后问题重现&lt;/td&gt;
+&lt;td&gt;网络管理器连接配置&lt;/td&gt;
+&lt;td&gt;是否只改了运行状态，旧配置又被加载&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;改了第三段 IP 仍异常&lt;/td&gt;
+&lt;td&gt;两端掩码、旧地址、所有相关路由&lt;/td&gt;
+&lt;td&gt;&lt;code&gt;/16&lt;/code&gt;、残留地址或策略规则可能仍造成重叠&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;只 ping 本机网卡 IP 成功&lt;/td&gt;
+&lt;td&gt;实际对端测试&lt;/td&gt;
+&lt;td&gt;本机地址通常走 local 路由，未证明网线可用&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;hr&gt;
+&lt;p&gt;封面为 AI 生成的藤田琴音（《学园偶像大师》）同人插画，角色形象参考&lt;a class="link" href="https://gakuen.idolmaster-official.jp/idol/kotone/" target="_blank" rel="noopener"
+&gt;官方角色页&lt;/a&gt;。&lt;/p&gt;</description></item></channel></rss>

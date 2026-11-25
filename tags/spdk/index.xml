@@ -1,0 +1,269 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?><rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel><title>SPDK on kxkxk's blog</title><link>https://kxkxk.github.io/tags/spdk/</link><description>Recent content in SPDK on kxkxk's blog</description><generator>Hugo -- gohugo.io</generator><language>zh-cn</language><lastBuildDate>Wed, 25 Nov 2026 00:00:00 +0000</lastBuildDate><atom:link href="https://kxkxk.github.io/tags/spdk/index.xml" rel="self" type="application/rss+xml"/><item><title>为 SPDK 裸盘实现 iostat：队列深度、忙碌时间和延迟</title><link>https://kxkxk.github.io/p/spdk-nvme-userspace-iostat/</link><pubDate>Wed, 25 Nov 2026 00:00:00 +0000</pubDate><guid>https://kxkxk.github.io/p/spdk-nvme-userspace-iostat/</guid><description>&lt;p&gt;已复核记账公式，并用合成快照实测 sysstat v12.7.6 的两个输入布局；未在真实 NVMe 上验证采集开销或告警阈值。&lt;/p&gt;
+&lt;h2 id="先定统计边界"&gt;先定统计边界
+&lt;/h2&gt;&lt;p&gt;当 NVMe 由 SPDK 用户态驱动直接管理、I/O 不经过 Linux 块层时，内核的 &lt;code&gt;/proc/diskstats&lt;/code&gt; 不会收到这些请求的计数。使用 &lt;code&gt;O_DIRECT&lt;/code&gt; 访问内核块设备不是同一个场景。若经过 SPDK bdev，先看 &lt;code&gt;bdev_get_iostat&lt;/code&gt; 和队列深度采样接口；若直接调用 SPDK NVMe API，就在自己的 I/O 封装层做记账。不要把 bdev、qpair 和 SSD 内部队列的统计当成同一个量。见 &lt;a class="link" href="https://spdk.io/doc/nvme.html" target="_blank" rel="noopener"
+&gt;SPDK NVMe 驱动&lt;/a&gt; 和 &lt;a class="link" href="https://spdk.io/doc/jsonrpc.html#bdev_get_iostat" target="_blank" rel="noopener"
+&gt;SPDK JSON-RPC&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;这里的请求从&lt;strong&gt;应用确认提交成功&lt;/strong&gt;计到&lt;strong&gt;应用处理完成回调&lt;/strong&gt;，因此延迟可能包含驱动排队及轮询等待，不能当成介质服务时间。业务层排队另计；提交失败不增加未完成数。已受理请求无论成功还是失败，最终只减一次；超时通知不等同于请求生命周期结束。吞吐与平均延迟在本文仅统计成功完成，错误单独计数。&lt;/p&gt;
+&lt;h2 id="从累计量得到区间指标"&gt;从累计量得到区间指标
+&lt;/h2&gt;&lt;p&gt;每个事件（成功受理、终结、快照）先用旧的未完成数 &lt;code&gt;Q&lt;/code&gt; 更新累计量，再修改状态；时基用单调时钟：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-text" data-lang="text"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;dt = now - last
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;queue_ns += Q * dt
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;busy_ns += (Q &amp;gt; 0 ? dt : 0)
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;last = now
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;两个快照之间，令采样间隔为 &lt;code&gt;T_s&lt;/code&gt; 秒或 &lt;code&gt;T_ns&lt;/code&gt; 纳秒；按读写分别计算：&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;指标&lt;/th&gt;
+&lt;th&gt;计算&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;IOPS&lt;/td&gt;
+&lt;td&gt;Δ成功完成数 / T_s&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;KiB/s&lt;/td&gt;
+&lt;td&gt;Δ成功字节数 / 1024 / T_s&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;await（ms）&lt;/td&gt;
+&lt;td&gt;Δ成功请求累计耗时(ns) / Δ成功完成数 / 10⁶&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;aqu-sz&lt;/td&gt;
+&lt;td&gt;Δqueue_ns / T_ns&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;busy %（类似 %util）&lt;/td&gt;
+&lt;td&gt;100 × Δbusy_ns / T_ns&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;零完成时 await 和延迟分位数无样本；但只要还有在途请求，快照就应继续推进 queue 和 busy。读取有代际标识的累计快照，重启或设备重建时丢弃跨代差分；采集失败和快照过期要能单独识别。长时间无完成时，结合 oldest inflight age 和 poller 心跳排查，不能只等 P99 变高。&lt;/p&gt;
+&lt;h2 id="两个队列每个窗口各一秒"&gt;两个队列，每个窗口各一秒
+&lt;/h2&gt;&lt;p&gt;合成序列：A 在 100 ms 受理、400 ms 成功完成一次 4 KiB 读；B 在 250 ms 受理、1100 ms 失败结束。&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;窗口&lt;/th&gt;
+&lt;th style="text-align: right"&gt;成功读 IOPS&lt;/th&gt;
+&lt;th style="text-align: right"&gt;读 await&lt;/th&gt;
+&lt;th style="text-align: right"&gt;aqu-sz&lt;/th&gt;
+&lt;th style="text-align: right"&gt;busy&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;[0, 1000) ms&lt;/td&gt;
+&lt;td style="text-align: right"&gt;1&lt;/td&gt;
+&lt;td style="text-align: right"&gt;300 ms&lt;/td&gt;
+&lt;td style="text-align: right"&gt;1.05&lt;/td&gt;
+&lt;td style="text-align: right"&gt;90%&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;[1000, 2000) ms&lt;/td&gt;
+&lt;td style="text-align: right"&gt;0&lt;/td&gt;
+&lt;td style="text-align: right"&gt;无样本&lt;/td&gt;
+&lt;td style="text-align: right"&gt;0.10&lt;/td&gt;
+&lt;td style="text-align: right"&gt;10%&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;首窗累计队列面积为 300 + 750 = 1050 请求·ms，忙碌时间取区间并集，只有 900 ms。次窗虽然没有成功完成，B 仍在途了 100 ms。上述积分已用合成事件计算复核，&lt;strong&gt;不是设备跑分&lt;/strong&gt;。&lt;/p&gt;
+&lt;p&gt;多线程时让所属线程发布各自的快照，避免逐 I/O 争用全局锁。对齐窗口后，次数、字节和队列面积可以相加；平均延迟应以完成数加权，P99 应先合并使用同一桶边界的直方图再计算。&lt;strong&gt;各 qpair 的忙碌时间不能相加&lt;/strong&gt;：要取各忙区间并集，或对盘级状态统一记账。若用间隔采样估算，标明“估算”，并验证是否漏掉短突发。对并行 NVMe，即使 busy 达到 100%，也只说明始终有未完成请求，不能证明盘已饱和。&lt;/p&gt;
+&lt;h3 id="窗口积分不等于-linux-66-的完成时记账"&gt;窗口积分不等于 Linux 6.6 的完成时记账
+&lt;/h3&gt;&lt;p&gt;以 Linux v6.6 的 blk-mq 路径为例，符合统计条件的请求结束时才把该请求的耗时累加到 &lt;code&gt;nsecs&lt;/code&gt;，导出的第 11 字段把读、写、discard 和 flush 的累计耗时相加后换算成毫秒。见 &lt;a class="link" href="https://github.com/torvalds/linux/blob/v6.6/block/blk-mq.c#L919-L935" target="_blank" rel="noopener"
+&gt;完成记账&lt;/a&gt; 和 &lt;a class="link" href="https://github.com/torvalds/linux/blob/v6.6/block/genhd.c#L905-L927" target="_blank" rel="noopener"
+&gt;字段导出&lt;/a&gt;。因此这里的窗口积分即使通过 &lt;code&gt;iostat -f&lt;/code&gt; 显示，也不承诺与原生 Linux v6.6 的短窗 &lt;code&gt;aqu-sz&lt;/code&gt; 数值一致。&lt;/p&gt;
+&lt;p&gt;假设唯一请求在 0.5 s 受理、1.5 s 完成，两个采样窗口分别为 [0, 1) s 和 [1, 2) s；在相同请求计时边界且不考虑舍入的模型下，积分得到 0.5、0.5，完成记账得到 0、1.0。前者适合显示当前窗口积压；严格比较 Linux 口径时应使用单独的完成累计耗时。这是由源码推导出的用例，不是硬件测量。&lt;/p&gt;
+&lt;h2 id="兼容显示与待验证"&gt;兼容显示与待验证
+&lt;/h2&gt;&lt;p&gt;支持 &lt;code&gt;-f&lt;/code&gt; 的 sysstat 可以从自定义目录读取兼容的 &lt;code&gt;block/&amp;lt;device&amp;gt;/stat&lt;/code&gt;。最小读写方案按顺序导出：读完成数、读合并数、读扇区数、累计读耗时 ms；写对应四项；然后是在途数、忙碌 ms、累计队列面积（请求·ms）。不计合并就填 0；扇区按 &lt;strong&gt;512 字节&lt;/strong&gt;换算而非设备 LBA 大小；累计量在导出时再转成毫秒。使用同目录临时文件与原子 rename 防止半行读取；需要精确采样间隔时，优先让 RPC 提供实际快照时间。字段形状相同不表示语义与任一内核版本完全一致。见 &lt;a class="link" href="https://docs.kernel.org/admin-guide/iostats.html" target="_blank" rel="noopener"
+&gt;Linux I/O 统计&lt;/a&gt; 与 &lt;a class="link" href="https://github.com/sysstat/sysstat/blob/master/man/iostat.in" target="_blank" rel="noopener"
+&gt;sysstat iostat 手册源码&lt;/a&gt;。&lt;/p&gt;
+&lt;p&gt;下文验证跨窗口且无成功完成的显示；仍需单独检查重启归零和计数回绕，并用 SPDK 只读负载对比开启与关闭采集时的 IOPS、P99 和每核开销。&lt;/p&gt;
+&lt;h3 id="sysstat-v1276两种输入布局与--z-实测无设备"&gt;sysstat v12.7.6：两种输入布局与 &lt;code&gt;-z&lt;/code&gt; 实测（无设备）
+&lt;/h3&gt;&lt;p&gt;从上游 v12.7.6 tag 构建 &lt;code&gt;iostat&lt;/code&gt;，用 &lt;code&gt;iostat -V&lt;/code&gt; 核对版本。在临时目录写两份合成累计快照，&lt;strong&gt;不访问真实 NVMe&lt;/strong&gt;。普通模式用 &lt;code&gt;LC_ALL=C iostat -dx -f &amp;quot;$dir&amp;quot; ALL 2 2&lt;/code&gt;，读 &lt;code&gt;$dir/block/spdk-test/stat&lt;/code&gt;：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-text" data-lang="text"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;1 0 8 300 0 0 0 0 1 900 1050
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;1 0 8 300 0 0 0 0 0 1000 1150
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;&lt;p&gt;先写第一行作为完整文件；启动时用 &lt;code&gt;stdbuf -oL&lt;/code&gt; 按行读输出，看到第一条 &lt;code&gt;spdk-test&lt;/code&gt; 数据后，立刻用同目录临时文件和原子 rename 把内容换成第二行。加 &lt;code&gt;-z&lt;/code&gt; 前，每次重跑都先恢复第一行。另以 &lt;code&gt;-p ALL&lt;/code&gt; 单独重复：命令为 &lt;code&gt;LC_ALL=C iostat -dx -f &amp;quot;$dir&amp;quot; -p ALL 2 2&lt;/code&gt;，输入改成 &lt;code&gt;$dir/diskstats&lt;/code&gt;，两份快照各在对应行前加 &lt;code&gt;240 0 spdk-test &lt;/code&gt;（末尾有空格），不要同时放两个布局。&lt;/p&gt;
+&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;布局&lt;/th&gt;
+&lt;th&gt;不加 &lt;code&gt;-z&lt;/code&gt; 的第二期&lt;/th&gt;
+&lt;th&gt;加 &lt;code&gt;-z&lt;/code&gt; 的第二期&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;block/spdk-test/stat&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;r/s = 0.00，w/s = 0.00，aqu-sz = 0.05，%util = 5.00&lt;/td&gt;
+&lt;td&gt;设备行不显示&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;&lt;code&gt;diskstats&lt;/code&gt; + &lt;code&gt;-p ALL&lt;/code&gt;&lt;/td&gt;
+&lt;td&gt;r/s = 0.00，w/s = 0.00，aqu-sz = 0.05，%util = 5.00&lt;/td&gt;
+&lt;td&gt;设备行不显示&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;p&gt;四组均执行通过。两个快照之间累计忙碌时间和队列面积各增 100 ms，完成数不变，显示值符合 2 秒采样的预期。&lt;strong&gt;排查“还在途但没有完成”的设备，不要用 &lt;code&gt;-z&lt;/code&gt; 判断设备是否空闲。&lt;/strong&gt; 第一份报告是用于建立差分的初值，不拿它的开机平均值作对比。&lt;/p&gt;
+&lt;p&gt;v12.7.6 的 &lt;a class="link" href="https://github.com/sysstat/sysstat/blob/v12.7.6/iostat.c#L1915-L1938" target="_blank" rel="noopener"
+&gt;采样分发&lt;/a&gt;切换输入解析器；&lt;a class="link" href="https://github.com/sysstat/sysstat/blob/v12.7.6/iostat.c#L395-L453" target="_blank" rel="noopener"
+&gt;设备文件读取&lt;/a&gt;可能把已打开但格式不合法的行记为零。因此不能直接截断旧文件再写。原子 rename 只保证单个文件完整，多设备一致快照需要在同一份聚合文件中发布同一批快照。用 &lt;code&gt;+f&lt;/code&gt; 合并系统设备与导出设备时使用不同名字，避免 &lt;a class="link" href="https://github.com/sysstat/sysstat/blob/v12.7.6/iostat.c#L274-L301" target="_blank" rel="noopener"
+&gt;同名合并&lt;/a&gt;。&lt;a class="link" href="https://github.com/sysstat/sysstat/blob/v12.7.6/iostat.c#L1455-L1461" target="_blank" rel="noopener"
+&gt;扩展输出&lt;/a&gt;对累计队列计数下降有单独处理；代际重启与计数回绕仍需分开验证。本节未测试回绕、重启归零、其他 sysstat 版本或硬件上的采集开销与告警阈值。&lt;/p&gt;</description></item><item><title>SPDK 大页内存计算器</title><link>https://kxkxk.github.io/p/spdk-%E5%A4%A7%E9%A1%B5%E5%86%85%E5%AD%98%E8%AE%A1%E7%AE%97%E5%99%A8/</link><pubDate>Thu, 08 May 2025 12:00:00 +0000</pubDate><guid>https://kxkxk.github.io/p/spdk-%E5%A4%A7%E9%A1%B5%E5%86%85%E5%AD%98%E8%AE%A1%E7%AE%97%E5%99%A8/</guid><description>&lt;img src="https://kxkxk.github.io/p/spdk-%E5%A4%A7%E9%A1%B5%E5%86%85%E5%AD%98%E8%AE%A1%E7%AE%97%E5%99%A8/cover.png" alt="Featured image of post SPDK 大页内存计算器" /&gt;&lt;p&gt;部署 SPDK/NVMe 存储时，需要为每个磁盘分配大页内存（HugePages）。本文提供一个计算器，根据服务器内存、磁盘容量和数量，快速计算出需要配置的 2MB 大页数量。&lt;/p&gt;
+&lt;h2 id="参数说明"&gt;参数说明
+&lt;/h2&gt;&lt;table&gt;
+&lt;thead&gt;
+&lt;tr&gt;
+&lt;th&gt;参数&lt;/th&gt;
+&lt;th&gt;说明&lt;/th&gt;
+&lt;/tr&gt;
+&lt;/thead&gt;
+&lt;tbody&gt;
+&lt;tr&gt;
+&lt;td&gt;内存大小&lt;/td&gt;
+&lt;td&gt;服务器物理内存，单位 GB&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;磁盘容量&lt;/td&gt;
+&lt;td&gt;单块 NVMe 磁盘容量&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;磁盘数量&lt;/td&gt;
+&lt;td&gt;NVMe 磁盘总数&lt;/td&gt;
+&lt;/tr&gt;
+&lt;tr&gt;
+&lt;td&gt;pc_size&lt;/td&gt;
+&lt;td&gt;SPDK page cache 大小&lt;/td&gt;
+&lt;/tr&gt;
+&lt;/tbody&gt;
+&lt;/table&gt;
+&lt;h2 id="计算器"&gt;计算器
+&lt;/h2&gt;&lt;div id="hp-calc"&gt;
+&lt;style&gt;
+#hp-calc { max-width: 640px; margin: 1.5em 0; }
+#hp-calc fieldset { border: 1px solid var(--card-border); border-radius: var(--card-border-radius); padding: 1.2em 1.5em; margin-bottom: 1em; background: var(--card-background); }
+#hp-calc legend { font-weight: 600; padding: 0 .4em; }
+.hp-row { display: flex; align-items: center; margin-bottom: .7em; gap: .6em; }
+.hp-row:last-child { margin-bottom: 0; }
+.hp-row label { min-width: 100px; font-size: .92em; }
+.hp-row input, .hp-row select { flex: 1; padding: .4em .6em; border: 1px solid var(--card-border); border-radius: 4px; background: var(--card-background); color: var(--body-text-color); font-size: .92em; }
+.hp-btn { display: inline-block; padding: .55em 1.6em; border: none; border-radius: 4px; background: var(--accent-color); color: #fff; font-size: .95em; cursor: pointer; margin-top: .5em; }
+.hp-btn:hover { opacity: .85; }
+.hp-results { margin-top: 1em; }
+.hp-result-item { display: flex; justify-content: space-between; padding: .5em 0; border-bottom: 1px dashed var(--card-border); font-size: .92em; }
+.hp-result-item:last-child { border-bottom: none; }
+.hp-result-item .val { font-weight: 700; font-family: monospace; }
+.hp-warn { color: #e55; font-weight: 600; margin-top: .6em; font-size: .9em; }
+.hp-ok { color: #2a9d8f; font-weight: 600; margin-top: .6em; font-size: .9em; }
+&lt;/style&gt;
+&lt;fieldset&gt;
+&lt;legend&gt;输入参数&lt;/legend&gt;
+&lt;div class="hp-row"&gt;
+&lt;label&gt;内存大小 (GB)&lt;/label&gt;
+&lt;input type="number" id="hp-mem" value="256" min="1"&gt;
+&lt;/div&gt;
+&lt;div class="hp-row"&gt;
+&lt;label&gt;磁盘容量&lt;/label&gt;
+&lt;select id="hp-disk"&gt;
+&lt;option value="7.68"&gt;7.68 TB&lt;/option&gt;
+&lt;option value="15.36"&gt;15.36 TB&lt;/option&gt;
+&lt;/select&gt;
+&lt;/div&gt;
+&lt;div class="hp-row"&gt;
+&lt;label&gt;磁盘数量&lt;/label&gt;
+&lt;input type="number" id="hp-count" value="1" min="1"&gt;
+&lt;/div&gt;
+&lt;div class="hp-row"&gt;
+&lt;label&gt;pc_size&lt;/label&gt;
+&lt;select id="hp-pcsz"&gt;
+&lt;option value="64"&gt;64 KB&lt;/option&gt;
+&lt;option value="128"&gt;128 KB&lt;/option&gt;
+&lt;option value="256"&gt;256 KB&lt;/option&gt;
+&lt;/select&gt;
+&lt;/div&gt;
+&lt;/fieldset&gt;
+&lt;p&gt;&lt;button class="hp-btn" onclick="hpCalc()"&gt;计算&lt;/button&gt;&lt;/p&gt;
+&lt;div class="hp-results" id="hp-out"&gt;&lt;/div&gt;
+&lt;/div&gt;
+&lt;script&gt;
+const HP_TABLE = {
+'64_7.68': { hp: 13, total: 18 },
+'64_15.36': { hp: 17, total: 26 },
+'128_7.68': { hp: 10, total: 13 },
+'128_15.36': { hp: 12, total: 17 },
+'256_7.68': { hp: 7, total: 9 },
+'256_15.36': { hp: 9, total: 12 },
+};
+function hpCalc() {
+const memGB = parseInt(document.getElementById('hp-mem').value) || 0;
+const disk = document.getElementById('hp-disk').value;
+const count = parseInt(document.getElementById('hp-count').value) || 0;
+const pcsz = document.getElementById('hp-pcsz').value;
+const key = pcsz + '_' + disk;
+const row = HP_TABLE[key];
+if (!row) { document.getElementById('hp-out').innerHTML = '&lt;p class="hp-warn"&gt;未找到对应的基准数据&lt;/p&gt;'; return; }
+if (memGB &lt;= 0 || count &lt;= 0) { document.getElementById('hp-out').innerHTML = '&lt;p class="hp-warn"&gt;请输入有效的内存和磁盘数量&lt;/p&gt;'; return; }
+const hpGB = row.hp * count + 10;
+const totalGB = row.total * count;
+const remainGB = memGB - totalGB;
+const totalHP = hpGB * 1024 / 2;
+const nodeHP = Math.ceil(totalHP / 2);
+const warnOrOk = remainGB &gt;= 0
+? `&lt;p class="hp-ok"&gt;内存充足，剩余 ${remainGB} GB 可供系统和其它进程使用&lt;/p&gt;`
+: `&lt;p class="hp-warn"&gt;内存不足！还需额外 ${Math.abs(remainGB)} GB，请减少磁盘数量或增大内存&lt;/p&gt;`;
+document.getElementById('hp-out').innerHTML = `
+&lt;div class="hp-results"&gt;
+&lt;div class="hp-result-item"&gt;&lt;span&gt;总大页内存需求&lt;/span&gt;&lt;span class="val"&gt;${hpGB} GB&lt;/span&gt;&lt;/div&gt;
+&lt;div class="hp-result-item"&gt;&lt;span&gt;总内存需求&lt;/span&gt;&lt;span class="val"&gt;${totalGB} GB&lt;/span&gt;&lt;/div&gt;
+&lt;div class="hp-result-item"&gt;&lt;span&gt;2MB 大页总数&lt;/span&gt;&lt;span class="val"&gt;${totalHP.toLocaleString()}&lt;/span&gt;&lt;/div&gt;
+&lt;div class="hp-result-item"&gt;&lt;span&gt;node0 大页数&lt;/span&gt;&lt;span class="val"&gt;${nodeHP.toLocaleString()}&lt;/span&gt;&lt;/div&gt;
+&lt;div class="hp-result-item"&gt;&lt;span&gt;node1 大页数&lt;/span&gt;&lt;span class="val"&gt;${nodeHP.toLocaleString()}&lt;/span&gt;&lt;/div&gt;
+${warnOrOk}
+&lt;/div&gt;`;
+}
+hpCalc();
+&lt;/script&gt;
+&lt;h2 id="配置方法"&gt;配置方法
+&lt;/h2&gt;&lt;p&gt;计算出大页数量后，在每个 NUMA node 上配置：&lt;/p&gt;
+&lt;div class="highlight"&gt;&lt;div class="chroma"&gt;
+&lt;table class="lntable"&gt;&lt;tr&gt;&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code&gt;&lt;span class="lnt"&gt;1
+&lt;/span&gt;&lt;span class="lnt"&gt;2
+&lt;/span&gt;&lt;span class="lnt"&gt;3
+&lt;/span&gt;&lt;span class="lnt"&gt;4
+&lt;/span&gt;&lt;span class="lnt"&gt;5
+&lt;/span&gt;&lt;span class="lnt"&gt;6
+&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;
+&lt;td class="lntd"&gt;
+&lt;pre tabindex="0" class="chroma"&gt;&lt;code class="language-bash" data-lang="bash"&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# 临时生效&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;echo&lt;/span&gt; &amp;lt;node0大页数&amp;gt; &amp;gt; /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="nb"&gt;echo&lt;/span&gt; &amp;lt;node1大页数&amp;gt; &amp;gt; /sys/devices/system/node/node1/hugepages/hugepages-2048kB/nr_hugepages
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;&lt;span class="c1"&gt;# 永久生效（写入 /etc/sysctl.conf）&lt;/span&gt;
+&lt;/span&gt;&lt;/span&gt;&lt;span class="line"&gt;&lt;span class="cl"&gt;vm.nr_hugepages &lt;span class="o"&gt;=&lt;/span&gt; &amp;lt;大页总数&amp;gt;
+&lt;/span&gt;&lt;/span&gt;&lt;/code&gt;&lt;/pre&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/table&gt;
+&lt;/div&gt;
+&lt;/div&gt;</description></item></channel></rss>
